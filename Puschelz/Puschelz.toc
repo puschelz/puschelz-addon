@@ -2,7 +2,7 @@
 ## Title: Puschelz
 ## Notes: Guild Addon - Captures guild bank and calendar data into SavedVariables for external sync.
 ## Notes-deDE: Gilden Addon - Erfasst Gildenbank- und Kalenderdaten in SavedVariables für die externe Synchronisierung.
-## IconTexture: Interface\Icons\INV_Misc_GroupNeedMore
+## IconTexture: Interface\AddOns\Puschelz\Media\puschelz-logo
 ## Author: The Puschelz
 ## Version: 0.13.0
 ## SavedVariables: PuschelzDB

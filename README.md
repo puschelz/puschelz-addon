@@ -13,7 +13,7 @@ Retail WoW addon that captures guild bank and calendar data and writes it to `Sa
 
 1. Open WoWUp.
 2. Add an addon source from GitHub URL (in most clients this is `Get Addons` -> `Install from URL`).
-3. Paste: `https://github.com/puschelz/addon`.
+3. Paste: `https://github.com/puschelz/puschelz-addon`.
 4. Select the Retail addon entry and install/update normally via WoWUp.
 
 If your WoWUp build does not show `Install from URL`, install from the published GitHub release zip and keep this repo as your update source.

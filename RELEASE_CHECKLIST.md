@@ -32,7 +32,7 @@ git push origin vX.Y.Z
 ```bash
 cd /home/nik/workspace/puschelz-addon
 gh release create vX.Y.Z \
-  --repo puschelz/addon \
+  --repo puschelz/puschelz-addon \
   --target main \
   --title "vX.Y.Z" \
   --notes "Short release notes"
