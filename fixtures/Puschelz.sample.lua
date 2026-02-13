@@ -1,0 +1,55 @@
+PuschelzDB = {
+  schemaVersion = 13,
+  updatedAt = 1739400000000,
+  player = {
+    characterName = "Fluffybear",
+    realmName = "Blackhand",
+    guildName = "The Puschelz",
+    faction = "Horde",
+    updatedAt = 1739400000000,
+  },
+  guildBank = {
+    lastScannedAt = 1739400000000,
+    tabs = {
+      {
+        tabIndex = 0,
+        tabName = "Consumables",
+        items = {
+          {
+            slotIndex = 0,
+            itemId = 191381,
+            itemName = "Phial of Tepid Versatility",
+            itemIcon = "134829",
+            quantity = 20,
+          },
+          {
+            slotIndex = 3,
+            itemId = 197794,
+            itemName = "Howling Rune",
+            itemIcon = "4638588",
+            quantity = 5,
+          },
+        },
+      },
+    },
+  },
+  calendar = {
+    lastScannedAt = 1739403600000,
+    events = {
+      {
+        wowEventId = 4242,
+        title = "Guild Raid",
+        eventType = "raid",
+        startTime = 1739443200000,
+        endTime = 1739450400000,
+      },
+      {
+        wowEventId = 9901,
+        title = "Darkmoon Faire",
+        eventType = "world",
+        startTime = 1739600000000,
+        endTime = 1739686400000,
+      },
+    },
+  },
+}

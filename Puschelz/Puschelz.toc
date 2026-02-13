@@ -1,0 +1,8 @@
+## Interface: 110200
+## Title: Puschelz
+## Notes: Captures guild bank and calendar data into SavedVariables for external sync.
+## Author: The Puschelz
+## Version: 0.13.0
+## SavedVariables: PuschelzDB
+
+Puschelz.lua
