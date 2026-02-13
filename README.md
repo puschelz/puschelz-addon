@@ -18,6 +18,16 @@ Retail WoW addon that captures guild bank and calendar data and writes it to `Sa
 
 If your WoWUp build does not show `Install from URL`, install from the published GitHub release zip and keep this repo as your update source.
 
+### WoWUp GitHub auth note
+
+In some WoWUp setups, GitHub installs for this repo only worked after adding a GitHub Personal Access Token (PAT) in WoWUp.
+
+If install fails with:
+- `Addon Installation Failed`
+- `end of central directory record signature not found`
+
+Then configure a GitHub PAT in WoWUp and retry install/update.
+
 ## Capture flow
 
 1. Open the guild bank and browse tabs (the addon queues all tabs and captures slot data).
