@@ -9,6 +9,15 @@ Retail WoW addon that captures guild bank and calendar data and writes it to `Sa
 2. Start WoW and enable the addon in the AddOns list.
 3. Log in on a guild character.
 
+## Install via WoWUp
+
+1. Open WoWUp.
+2. Add an addon source from GitHub URL (in most clients this is `Get Addons` -> `Install from URL`).
+3. Paste: `https://github.com/puschelz/addon`.
+4. Select the Retail addon entry and install/update normally via WoWUp.
+
+If your WoWUp build does not show `Install from URL`, install from the published GitHub release zip and keep this repo as your update source.
+
 ## Capture flow
 
 1. Open the guild bank and browse tabs (the addon queues all tabs and captures slot data).
@@ -80,3 +89,7 @@ The `tabs[*].items[*]` and `calendar.events[*]` fields are intentionally aligned
 
 - `fixtures/Puschelz.sample.lua`: sample SavedVariables file.
 - `fixtures/Puschelz.sample.expected.json`: expected parsed object for desktop-client tests.
+
+## Releases
+
+See `RELEASE_CHECKLIST.md` for the repeatable version bump + tag + release flow.
