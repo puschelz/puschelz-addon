@@ -40,7 +40,7 @@ Then configure a GitHub PAT in WoWUp and retry install/update.
 
 - `/puschelz status` (or `/pz`) shows captured counts and last scan times.
 - `/puschelz scan` triggers a manual bank + calendar scan.
-- `/puschelz check` triggers a manual raid addon handshake in the current raid.
+- `/puschelz check` triggers a manual raid addon handshake in the current raid (regular or instance raid/LFR).
 - `/puschelz raidstatus` toggles the raid status window (Installed/Missing/Pending + version per raid member).
 
 ## SavedVariables shape

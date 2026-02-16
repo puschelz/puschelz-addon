@@ -748,16 +748,33 @@ local function parse_raid_message(message)
   }
 end
 
-local function send_raid_message(payload)
+local function resolve_raid_distribution()
+  if IsInGroup and LE_PARTY_CATEGORY_INSTANCE and IsInGroup(LE_PARTY_CATEGORY_INSTANCE) then
+    return "INSTANCE_CHAT"
+  end
+
+  if IsInRaid() then
+    return "RAID"
+  end
+
+  return nil
+end
+
+local function send_raid_message(payload, distribution_override)
   if not C_ChatInfo or not C_ChatInfo.SendAddonMessage then
     return false
   end
 
-  if not IsInRaid() then
+  local distribution = distribution_override
+  if distribution ~= "RAID" and distribution ~= "INSTANCE_CHAT" then
+    distribution = resolve_raid_distribution()
+  end
+
+  if not distribution then
     return false
   end
 
-  C_ChatInfo.SendAddonMessage(RAID_STATUS_PREFIX, payload, "RAID")
+  C_ChatInfo.SendAddonMessage(RAID_STATUS_PREFIX, payload, distribution)
   return true
 end
 
@@ -872,7 +889,7 @@ begin_raid_presence_check = function(trigger_source)
   return true
 end
 
-local function handle_raid_addon_message(prefix, message, sender)
+local function handle_raid_addon_message(prefix, message, channel, sender)
   if prefix ~= RAID_STATUS_PREFIX then
     return
   end
@@ -894,7 +911,7 @@ local function handle_raid_addon_message(prefix, message, sender)
     end
 
     local function send_reply()
-      send_raid_message(build_raid_message("R", payload.queryId, ADDON_VERSION))
+      send_raid_message(build_raid_message("R", payload.queryId, ADDON_VERSION), channel)
     end
 
     if C_Timer and C_Timer.After then
@@ -1062,7 +1079,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
   if event == "CHAT_MSG_ADDON" then
     local prefix, message, channel, sender = ...
     if channel == "RAID" or channel == "INSTANCE_CHAT" then
-      handle_raid_addon_message(prefix, message, sender)
+      handle_raid_addon_message(prefix, message, channel, sender)
     end
     return
   end
