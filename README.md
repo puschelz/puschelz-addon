@@ -32,13 +32,16 @@ Then configure a GitHub PAT in WoWUp and retry install/update.
 
 1. Open the guild bank and browse tabs (the addon queues all tabs and captures slot data).
 2. Calendar data is scanned on login and on calendar updates.
-3. Run `/reload` (or log out) to flush SavedVariables to disk.
-4. Inspect `WTF/Account/<ACCOUNT>/SavedVariables/Puschelz.lua`.
+3. Raid addon coverage checks auto-refresh on raid roster changes.
+4. Run `/reload` (or log out) to flush SavedVariables to disk.
+5. Inspect `WTF/Account/<ACCOUNT>/SavedVariables/Puschelz.lua`.
 
 ## Slash commands
 
 - `/puschelz status` (or `/pz`) shows captured counts and last scan times.
 - `/puschelz scan` triggers a manual bank + calendar scan.
+- `/puschelz check` triggers a manual raid addon handshake in the current raid.
+- `/puschelz raidstatus` toggles the raid status window (Installed/Missing/Pending + version per raid member).
 
 ## SavedVariables shape
 
