@@ -29,10 +29,6 @@ local RAID_REPLY_TIMEOUT_MS = 4000
 local RAID_ROSTER_DEBOUNCE_SEC = 1.0
 local RAID_STATUS_ROW_COUNT = 40
 
-if type(ADDON_VERSION) ~= "string" or ADDON_VERSION == "" then
-  ADDON_VERSION = "unknown"
-end
-
 local raid_status = {
   roster = {},
   rosterByKey = {},
