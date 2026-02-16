@@ -16,6 +16,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Sync TOC version from tag
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          test -n "$TAG_VERSION"
+          sed -i -E "s/^## Version: .*/## Version: ${TAG_VERSION}/" Puschelz/Puschelz.toc
+          grep -E "^## Version: ${TAG_VERSION}$" Puschelz/Puschelz.toc
+
       - name: Build addon zip
         run: |
           test -d Puschelz

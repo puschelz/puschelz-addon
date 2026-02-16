@@ -3,7 +3,26 @@ local ADDON_NAME = ...
 local SCHEMA_VERSION = 13
 local GUILD_BANK_SLOTS_PER_TAB = 98
 local CALENDAR_MONTH_OFFSETS = { -1, 0, 1, 2 }
-local ADDON_VERSION = (GetAddOnMetadata and GetAddOnMetadata(ADDON_NAME, "Version")) or "unknown"
+
+local function resolve_addon_version()
+  local version
+
+  if C_AddOns and C_AddOns.GetAddOnMetadata then
+    version = C_AddOns.GetAddOnMetadata(ADDON_NAME, "Version")
+  end
+
+  if (type(version) ~= "string" or version == "") and GetAddOnMetadata then
+    version = GetAddOnMetadata(ADDON_NAME, "Version")
+  end
+
+  if type(version) ~= "string" or version == "" or version == "@project-version@" then
+    return "unknown"
+  end
+
+  return version
+end
+
+local ADDON_VERSION = resolve_addon_version()
 local RAID_STATUS_PREFIX = "PUSCHELZSTAT"
 local RAID_QUERY_COOLDOWN_MS = 8000
 local RAID_REPLY_TIMEOUT_MS = 2500
