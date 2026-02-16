@@ -25,7 +25,7 @@ end
 local ADDON_VERSION = resolve_addon_version()
 local RAID_STATUS_PREFIX = "PUSCHELZSTAT"
 local RAID_QUERY_COOLDOWN_MS = 8000
-local RAID_REPLY_TIMEOUT_MS = 2500
+local RAID_REPLY_TIMEOUT_MS = 4000
 local RAID_ROSTER_DEBOUNCE_SEC = 1.0
 local RAID_STATUS_ROW_COUNT = 40
 
@@ -50,8 +50,20 @@ local raid_status = {
   rows = {},
 }
 
-local function now_ms()
+local function now_epoch_ms()
   return math.floor(GetServerTime() * 1000)
+end
+
+local function now_runtime_ms()
+  if GetTimePreciseSec then
+    return math.floor(GetTimePreciseSec() * 1000)
+  end
+
+  if GetTime then
+    return math.floor(GetTime() * 1000)
+  end
+
+  return now_epoch_ms()
 end
 
 local function parse_item_id(link)
@@ -218,7 +230,7 @@ local function refresh_player_metadata()
   PuschelzDB.player.realmName = realm_name
   PuschelzDB.player.guildName = guild_name
   PuschelzDB.player.faction = UnitFactionGroup("player")
-  PuschelzDB.player.updatedAt = now_ms()
+  PuschelzDB.player.updatedAt = now_epoch_ms()
 end
 
 local function rebuild_ordered_tabs()
@@ -271,7 +283,7 @@ local function capture_bank_tab(tab_index)
   end
 
   PuschelzDB.guildBank.tabsByIndex[tab_payload.tabIndex] = tab_payload
-  PuschelzDB.guildBank.lastScannedAt = now_ms()
+  PuschelzDB.guildBank.lastScannedAt = now_epoch_ms()
   PuschelzDB.updatedAt = PuschelzDB.guildBank.lastScannedAt
 end
 
@@ -405,7 +417,7 @@ local function capture_calendar()
 
   local events = build_calendar_payload()
   PuschelzDB.calendar.events = events
-  PuschelzDB.calendar.lastScannedAt = now_ms()
+  PuschelzDB.calendar.lastScannedAt = now_epoch_ms()
   PuschelzDB.updatedAt = PuschelzDB.calendar.lastScannedAt
 end
 
@@ -542,7 +554,7 @@ local function get_member_presence(member_key)
     return "installed", version
   end
 
-  if raid_status.pendingUntilMs > now_ms() then
+  if raid_status.pendingUntilMs > now_runtime_ms() then
     return "pending", nil
   end
 
@@ -784,11 +796,11 @@ local function mark_reply_sent(sender_key, query_id)
     return false
   end
 
-  raid_status.sentReplyKeys[dedupe_key] = now_ms()
+  raid_status.sentReplyKeys[dedupe_key] = now_runtime_ms()
   raid_status.sentReplyCount = raid_status.sentReplyCount + 1
 
   if raid_status.sentReplyCount > 300 then
-    local cutoff_ms = now_ms() - (10 * 60 * 1000)
+    local cutoff_ms = now_runtime_ms() - (10 * 60 * 1000)
     local kept = 0
     for key, seen_at in pairs(raid_status.sentReplyKeys) do
       if seen_at and seen_at >= cutoff_ms then
@@ -833,7 +845,7 @@ begin_raid_presence_check = function(trigger_source)
 
   keep_local_player_response()
 
-  local now = now_ms()
+  local now = now_runtime_ms()
   local elapsed_ms = now - (raid_status.lastQueryAtMs or 0)
   if raid_status.lastQueryAtMs > 0 and elapsed_ms < RAID_QUERY_COOLDOWN_MS then
     local remaining_ms = RAID_QUERY_COOLDOWN_MS - elapsed_ms
@@ -956,7 +968,7 @@ local function schedule_group_roster_update()
 end
 
 local function seed_raid_random_delay()
-  local seed = now_ms()
+  local seed = now_runtime_ms()
   local player_guid = UnitGUID("player")
   if type(player_guid) == "string" and player_guid ~= "" then
     seed = (seed + stable_hash_number(player_guid)) % 2147483647
@@ -1086,6 +1098,6 @@ frame:SetScript("OnEvent", function(_, event, ...)
 
   if event == "PLAYER_LOGOUT" then
     ensure_db()
-    PuschelzDB.updatedAt = now_ms()
+    PuschelzDB.updatedAt = now_epoch_ms()
   end
 end)
