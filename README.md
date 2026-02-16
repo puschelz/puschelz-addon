@@ -1,4 +1,4 @@
-# Puschelz WoW Addon (V13)
+# Puschelz WoW Addon (V14)
 
 Retail WoW addon that captures guild bank and calendar data and writes it to `SavedVariables/Puschelz.lua`.
 
@@ -47,7 +47,7 @@ Then configure a GitHub PAT in WoWUp and retry install/update.
 
 ```lua
 PuschelzDB = {
-  schemaVersion = 13,
+  schemaVersion = 14,
   updatedAt = 1739400000000,
   player = {
     characterName = "Fluffybear",
@@ -83,6 +83,10 @@ PuschelzDB = {
         eventType = "raid",
         startTime = 1739443200000,
         endTime = 1739450400000,
+        attendees = {
+          { name = "Fluffybear-Blackhand", status = "signedUp" },
+          { name = "Magebro-Blackhand", status = "tentative" },
+        },
       },
       {
         wowEventId = 9901,
@@ -96,7 +100,7 @@ PuschelzDB = {
 }
 ```
 
-The `tabs[*].items[*]` and `calendar.events[*]` fields are intentionally aligned to the website backend payload contract used by `/api/addon-sync`.
+The `tabs[*].items[*]`, `calendar.events[*]`, and optional `calendar.events[*].attendees[*]` fields are intentionally aligned to the website backend payload contract used by `/api/addon-sync`.
 
 ## Parser fixtures (for V14)
 

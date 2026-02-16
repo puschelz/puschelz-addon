@@ -1,5 +1,5 @@
 PuschelzDB = {
-  schemaVersion = 13,
+  schemaVersion = 14,
   updatedAt = 1739400000000,
   player = {
     characterName = "Fluffybear",
@@ -42,6 +42,16 @@ PuschelzDB = {
         eventType = "raid",
         startTime = 1739443200000,
         endTime = 1739450400000,
+        attendees = {
+          {
+            name = "Fluffybear-Blackhand",
+            status = "signedUp",
+          },
+          {
+            name = "Magebro-Blackhand",
+            status = "tentative",
+          },
+        },
       },
       {
         wowEventId = 9901,
