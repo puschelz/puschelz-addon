@@ -210,6 +210,7 @@ local function map_calendar_invite_status(invite_status)
   if status_text == "" then
     return nil
   end
+  local status_compact = status_text:gsub("[%s_%-]+", "")
 
   if status_text:find("tentative", 1, true) then
     return "tentative"
@@ -217,7 +218,7 @@ local function map_calendar_invite_status(invite_status)
 
   if status_text:find("declin", 1, true)
     or status_text:find("standby", 1, true)
-    or status_text:find("notsigned", 1, true)
+    or status_compact:find("notsigned", 1, true)
     or status_text:find("invited", 1, true)
     or status_text == "out"
   then
