@@ -28,7 +28,8 @@ local RAID_QUERY_COOLDOWN_MS = 8000
 local RAID_REPLY_TIMEOUT_MS = 4000
 local RAID_ROSTER_DEBOUNCE_SEC = 1.0
 local RAID_STATUS_ROW_COUNT = 40
-local CALENDAR_ATTENDEE_SCAN_TIMEOUT_SEC = 12
+local CALENDAR_ATTENDEE_SCAN_TIMEOUT_SEC = 45
+local CALENDAR_ATTENDEE_EVENT_OPEN_TIMEOUT_SEC = 1.5
 
 local raid_status = {
   roster = {},
@@ -600,6 +601,34 @@ local function process_next_calendar_attendee_event()
   )
 end
 
+local function finish_active_calendar_event_attendee_capture(expected_raid_event)
+  if not calendar_attendee_scan.inProgress then
+    return
+  end
+
+  local active_raid_event = calendar_attendee_scan.activeRaidEvent
+  if not active_raid_event then
+    return
+  end
+
+  if expected_raid_event and active_raid_event ~= expected_raid_event then
+    -- Timer callbacks can fire after scan has advanced to another event.
+    return
+  end
+
+  local attendees = collect_open_calendar_event_attendees()
+  if attendees then
+    active_raid_event.eventPayload.attendees = attendees
+  end
+
+  if C_Calendar and C_Calendar.CloseEvent then
+    C_Calendar.CloseEvent()
+  end
+
+  calendar_attendee_scan.activeRaidEvent = nil
+  process_next_calendar_attendee_event()
+end
+
 local function calendar_open_event_matches_active(active_raid_event, month_offset, month_day, event_index)
   if active_raid_event.openRequestedAtMs then
     local elapsed_since_open_ms = now_runtime_ms() - active_raid_event.openRequestedAtMs
@@ -679,17 +708,34 @@ local function on_calendar_open_event(month_offset, month_day, event_index)
     return
   end
 
-  local attendees = collect_open_calendar_event_attendees()
-  if attendees then
-    active_raid_event.eventPayload.attendees = attendees
+  active_raid_event.openedAtMs = now_runtime_ms()
+
+  if not C_Timer or not C_Timer.After then
+    finish_active_calendar_event_attendee_capture(active_raid_event)
+    return
   end
 
-  if C_Calendar and C_Calendar.CloseEvent then
-    C_Calendar.CloseEvent()
+  local scan_generation = calendar_attendee_scan.scanGeneration
+  C_Timer.After(CALENDAR_ATTENDEE_EVENT_OPEN_TIMEOUT_SEC, function()
+    if not calendar_attendee_scan.inProgress or calendar_attendee_scan.scanGeneration ~= scan_generation then
+      return
+    end
+
+    finish_active_calendar_event_attendee_capture(active_raid_event)
+  end)
+end
+
+local function on_calendar_update_invite_list()
+  if not calendar_attendee_scan.inProgress then
+    return
   end
 
-  calendar_attendee_scan.activeRaidEvent = nil
-  process_next_calendar_attendee_event()
+  local active_raid_event = calendar_attendee_scan.activeRaidEvent
+  if not active_raid_event or not active_raid_event.openedAtMs then
+    return
+  end
+
+  finish_active_calendar_event_attendee_capture(active_raid_event)
 end
 
 local function capture_calendar()
@@ -1342,6 +1388,7 @@ frame:RegisterEvent("GUILDBANKFRAME_OPENED")
 frame:RegisterEvent("GUILDBANKBAGSLOTS_CHANGED")
 frame:RegisterEvent("CALENDAR_UPDATE_EVENT_LIST")
 frame:RegisterEvent("CALENDAR_OPEN_EVENT")
+frame:RegisterEvent("CALENDAR_UPDATE_INVITE_LIST")
 frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 frame:RegisterEvent("GROUP_ROSTER_UPDATE")
 frame:RegisterEvent("CHAT_MSG_ADDON")
@@ -1376,6 +1423,11 @@ frame:SetScript("OnEvent", function(_, event, ...)
 
   if event == "CALENDAR_OPEN_EVENT" then
     on_calendar_open_event(...)
+    return
+  end
+
+  if event == "CALENDAR_UPDATE_INVITE_LIST" then
+    on_calendar_update_invite_list()
     return
   end
 
