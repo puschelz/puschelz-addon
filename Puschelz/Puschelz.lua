@@ -318,6 +318,7 @@ local calendar_attendee_scan = {
   pendingRaidEvents = {},
   activeRaidEvent = nil,
   scanGeneration = 0,
+  notifyOnCompletion = false,
 }
 
 local function ensure_db()
@@ -568,12 +569,47 @@ local function reset_calendar_attendee_scan_state()
   calendar_attendee_scan.events = nil
   calendar_attendee_scan.pendingRaidEvents = {}
   calendar_attendee_scan.activeRaidEvent = nil
+  calendar_attendee_scan.notifyOnCompletion = false
+end
+
+local function print_calendar_scan_complete(events)
+  local event_count = 0
+  local raid_event_count = 0
+  local events_with_attendees = 0
+  local attendee_total = 0
+
+  for _, event in ipairs(events or {}) do
+    event_count = event_count + 1
+    if event.eventType == "raid" then
+      raid_event_count = raid_event_count + 1
+      local attendees = event.attendees or {}
+      local attendee_count = #attendees
+      if attendee_count > 0 then
+        events_with_attendees = events_with_attendees + 1
+        attendee_total = attendee_total + attendee_count
+      end
+    end
+  end
+
+  print(
+    string.format(
+      "Puschelz: calendar scan complete (%d events, %d raids, %d raids with attendees, %d attendees total).",
+      event_count,
+      raid_event_count,
+      events_with_attendees,
+      attendee_total
+    )
+  )
 end
 
 local function complete_calendar_attendee_scan()
   local events = calendar_attendee_scan.events or {}
+  local notify_on_completion = calendar_attendee_scan.notifyOnCompletion
   reset_calendar_attendee_scan_state()
   finalize_calendar_capture(events)
+  if notify_on_completion then
+    print_calendar_scan_complete(events)
+  end
 end
 
 local function process_next_calendar_attendee_event()
@@ -738,14 +774,20 @@ local function on_calendar_update_invite_list()
   finish_active_calendar_event_attendee_capture(active_raid_event)
 end
 
-local function capture_calendar()
+local function capture_calendar(notify_on_completion)
   if calendar_attendee_scan.inProgress then
+    if notify_on_completion then
+      calendar_attendee_scan.notifyOnCompletion = true
+    end
     return
   end
 
   local events, pending_raid_events = build_calendar_payload()
   if #pending_raid_events == 0 then
     finalize_calendar_capture(events)
+    if notify_on_completion then
+      print_calendar_scan_complete(events)
+    end
     return
   end
 
@@ -753,6 +795,7 @@ local function capture_calendar()
   calendar_attendee_scan.events = events
   calendar_attendee_scan.pendingRaidEvents = pending_raid_events
   calendar_attendee_scan.activeRaidEvent = nil
+  calendar_attendee_scan.notifyOnCompletion = notify_on_completion == true
   calendar_attendee_scan.scanGeneration = calendar_attendee_scan.scanGeneration + 1
   local scan_generation = calendar_attendee_scan.scanGeneration
 
@@ -767,12 +810,15 @@ local function capture_calendar()
   process_next_calendar_attendee_event()
 end
 
-local function request_calendar_scan()
+local function request_calendar_scan(notify_on_completion)
   if not C_Calendar or not C_Calendar.OpenCalendar then
+    if notify_on_completion then
+      print("Puschelz: calendar scan is unavailable right now.")
+    end
     return
   end
   C_Calendar.OpenCalendar()
-  capture_calendar()
+  capture_calendar(notify_on_completion)
 end
 
 local function normalized_realm_name()
@@ -1358,7 +1404,7 @@ SlashCmdList.PUSCHELZ = function(msg)
       print("Puschelz: open the guild bank first to scan bank tabs.")
     end
 
-    request_calendar_scan()
+    request_calendar_scan(true)
     print("Puschelz: scan triggered.")
     return
   end
@@ -1398,7 +1444,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
   if event == "PLAYER_LOGIN" then
     ensure_db()
     refresh_player_metadata()
-    request_calendar_scan()
+    request_calendar_scan(false)
     seed_raid_random_delay()
     register_raid_status_prefix()
     schedule_group_roster_update()
@@ -1433,7 +1479,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
 
   if event == "CALENDAR_UPDATE_EVENT_LIST" then
     if not calendar_attendee_scan.inProgress then
-      capture_calendar()
+      capture_calendar(false)
     end
     return
   end
