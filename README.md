@@ -32,8 +32,8 @@ Then configure a GitHub PAT in WoWUp and retry install/update.
 
 1. Open the guild bank and browse tabs (the addon queues all tabs and captures slot data).
 2. Calendar data is scanned on login and on calendar updates.
-3. Open the professions crafting-orders UI to passively snapshot currently visible guild orders.
-4. Use the `Sync Guild Orders` button in the professions window to actively request and capture all visible guild orders for the current crafter view.
+3. Open either the crafter or customer crafting-orders UI to passively snapshot currently visible guild orders.
+4. Use the `Sync Guild Orders` button on either professions/orders window to actively request and capture visible guild orders from both the crafter and `My Orders` views.
 5. Matching open guild orders are printed into chat on login for the current character until they disappear from a later open-order scan.
 6. Raid addon coverage checks auto-refresh on raid roster changes.
 7. Run `/reload` (or log out) to flush SavedVariables to disk.

@@ -331,7 +331,8 @@ local guild_order_sync = {
   notifyOnCompletion = false,
   requestGeneration = 0,
   collectedByOrderId = {},
-  button = nil,
+  profession = nil,
+  buttons = {},
 }
 
 local function ensure_db()
@@ -956,22 +957,39 @@ local function finalize_guild_orders_capture(orders)
   PuschelzDB.updatedAt = PuschelzDB.guildOrders.lastScannedAt
 end
 
-local function collect_visible_guild_orders()
-  if not C_CraftingOrders or not C_CraftingOrders.GetCrafterOrders then
-    return nil
-  end
-
-  local raw_orders = C_CraftingOrders.GetCrafterOrders()
+local function collect_guild_orders_into_map(raw_orders, by_order_id)
   if type(raw_orders) ~= "table" then
-    return {}
+    return
   end
 
-  local by_order_id = {}
   for _, raw_order in ipairs(raw_orders) do
     local normalized = normalize_guild_order(raw_order)
     if normalized then
       by_order_id[normalized.orderId] = normalized
     end
+  end
+end
+
+local function collect_visible_guild_orders()
+  if not C_CraftingOrders then
+    return nil
+  end
+
+  local by_order_id = {}
+  local has_supported_source = false
+
+  if C_CraftingOrders.GetCrafterOrders then
+    has_supported_source = true
+    collect_guild_orders_into_map(C_CraftingOrders.GetCrafterOrders(), by_order_id)
+  end
+
+  if C_CraftingOrders.GetMyOrders then
+    has_supported_source = true
+    collect_guild_orders_into_map(C_CraftingOrders.GetMyOrders(), by_order_id)
+  end
+
+  if not has_supported_source then
+    return nil
   end
 
   return sorted_guild_orders_from_map(by_order_id)
@@ -999,56 +1017,174 @@ local function capture_visible_guild_orders(notify_on_completion)
   return true
 end
 
-local function set_guild_order_sync_button_busy(is_busy)
-  if not guild_order_sync.button then
+local function merge_visible_guild_orders_into_sync_state()
+  local orders = collect_visible_guild_orders()
+  if not orders then
     return
   end
 
-  guild_order_sync.button:SetEnabled(not is_busy)
-  guild_order_sync.button:SetText(is_busy and "Syncing..." or "Sync Guild Orders")
+  for _, order in ipairs(orders) do
+    guild_order_sync.collectedByOrderId[order.orderId] = order
+  end
+end
+
+local function current_profession_enum()
+  if not C_TradeSkillUI or not C_TradeSkillUI.GetBaseProfessionInfo then
+    return nil
+  end
+
+  local info = C_TradeSkillUI.GetBaseProfessionInfo()
+  if type(info) ~= "table" then
+    return nil
+  end
+
+  local profession = tonumber(info.profession)
+  if profession and profession >= 0 then
+    return profession
+  end
+
+  return nil
+end
+
+local function crafting_order_request_succeeded(result)
+  if type(result) ~= "number" then
+    return false
+  end
+
+  local ok_result = Enum and Enum.CraftingOrderResult and Enum.CraftingOrderResult.Ok
+  if type(ok_result) == "number" then
+    return result == ok_result
+  end
+
+  return result == 0
+end
+
+local function guild_order_request_sort_info()
+  return {
+    primarySort = {
+      sortType = (Enum and Enum.CraftingOrderSortType and Enum.CraftingOrderSortType.TimeRemaining) or 6,
+      reversed = false,
+    },
+    secondarySort = {
+      sortType = (Enum and Enum.CraftingOrderSortType and Enum.CraftingOrderSortType.ItemName) or 0,
+      reversed = false,
+    },
+  }
+end
+
+local function set_guild_order_sync_button_busy(is_busy)
+  for _, button in pairs(guild_order_sync.buttons) do
+    button:SetEnabled(not is_busy)
+    button:SetText(is_busy and "Syncing..." or "Sync Guild Orders")
+  end
+end
+
+local function reset_full_guild_order_sync_state()
+  guild_order_sync.active = false
+  guild_order_sync.notifyOnCompletion = false
+  guild_order_sync.collectedByOrderId = {}
+  guild_order_sync.profession = nil
+  set_guild_order_sync_button_busy(false)
 end
 
 local function finalize_full_guild_order_sync(notify_on_completion)
   local orders = sorted_guild_orders_from_map(guild_order_sync.collectedByOrderId)
+  reset_full_guild_order_sync_state()
   finalize_guild_orders_capture(orders)
-  guild_order_sync.active = false
-  guild_order_sync.notifyOnCompletion = false
-  guild_order_sync.collectedByOrderId = {}
-  set_guild_order_sync_button_busy(false)
 
   if notify_on_completion then
     print(string.format("Puschelz: full guild order sync complete (%d order(s)).", #orders))
   end
 end
 
-local function request_full_guild_order_sync_page(offset, generation)
+local function abort_full_guild_order_sync(message)
+  reset_full_guild_order_sync_state()
+  if type(message) == "string" and message ~= "" then
+    print(message)
+  end
+end
+
+local function request_full_guild_order_sync_source(source_name, offset, generation)
   if not guild_order_sync.active or guild_order_sync.requestGeneration ~= generation then
     return
   end
 
-  if not C_CraftingOrders or not C_CraftingOrders.RequestCrafterOrders then
-    guild_order_sync.active = false
-    guild_order_sync.notifyOnCompletion = false
-    guild_order_sync.collectedByOrderId = {}
-    set_guild_order_sync_button_busy(false)
-    print("Puschelz: guild order sync is unavailable right now.")
+  if not C_CraftingOrders then
+    abort_full_guild_order_sync("Puschelz: guild order sync is unavailable right now.")
     return
   end
 
-  local function handle_result(_, _, _, expect_more_rows, next_offset)
+  if source_name == nil then
+    finalize_full_guild_order_sync(guild_order_sync.notifyOnCompletion)
+    return
+  end
+
+  if source_name == "crafter" then
+    if not C_CraftingOrders.RequestCrafterOrders or guild_order_sync.profession == nil then
+      request_full_guild_order_sync_source("myOrders", 0, generation)
+      return
+    end
+
+    local function handle_result(result, _, _, expect_more_rows, next_offset)
+      if not guild_order_sync.active or guild_order_sync.requestGeneration ~= generation then
+        return
+      end
+
+      if crafting_order_request_succeeded(result) then
+        merge_visible_guild_orders_into_sync_state()
+      end
+
+      if crafting_order_request_succeeded(result) and expect_more_rows and type(next_offset) == "number" then
+        request_full_guild_order_sync_source("crafter", next_offset, generation)
+        return
+      end
+
+      request_full_guild_order_sync_source("myOrders", 0, generation)
+    end
+
+    local callback = handle_result
+    if C_FunctionContainers and C_FunctionContainers.CreateCallback then
+      callback = C_FunctionContainers.CreateCallback(handle_result)
+    end
+
+    local sort_info = guild_order_request_sort_info()
+    local request = {
+      orderType = GUILD_ORDER_TYPE_GUILD,
+      profession = guild_order_sync.profession,
+      searchFavorites = false,
+      initialNonPublicSearch = true,
+      primarySort = sort_info.primarySort,
+      secondarySort = sort_info.secondarySort,
+      forCrafter = true,
+      offset = offset or 0,
+      callback = callback,
+    }
+
+    C_CraftingOrders.RequestCrafterOrders(request)
+    return
+  end
+
+  if source_name ~= "myOrders" then
+    finalize_full_guild_order_sync(guild_order_sync.notifyOnCompletion)
+    return
+  end
+
+  if not C_CraftingOrders.ListMyOrders then
+    finalize_full_guild_order_sync(guild_order_sync.notifyOnCompletion)
+    return
+  end
+
+  local function handle_result(result, expect_more_rows, next_offset)
     if not guild_order_sync.active or guild_order_sync.requestGeneration ~= generation then
       return
     end
 
-    local orders = collect_visible_guild_orders()
-    if orders then
-      for _, order in ipairs(orders) do
-        guild_order_sync.collectedByOrderId[order.orderId] = order
-      end
+    if crafting_order_request_succeeded(result) then
+      merge_visible_guild_orders_into_sync_state()
     end
 
-    if expect_more_rows and type(next_offset) == "number" then
-      request_full_guild_order_sync_page(next_offset, generation)
+    if crafting_order_request_succeeded(result) and expect_more_rows and type(next_offset) == "number" then
+      request_full_guild_order_sync_source("myOrders", next_offset, generation)
       return
     end
 
@@ -1060,24 +1196,15 @@ local function request_full_guild_order_sync_page(offset, generation)
     callback = C_FunctionContainers.CreateCallback(handle_result)
   end
 
+  local sort_info = guild_order_request_sort_info()
   local request = {
-    orderType = GUILD_ORDER_TYPE_GUILD,
-    searchFavorites = false,
-    initialNonPublicSearch = true,
-    primarySort = {
-      sortType = (Enum and Enum.CraftingOrderSortType and Enum.CraftingOrderSortType.TimeRemaining) or 6,
-      reversed = false,
-    },
-    secondarySort = {
-      sortType = (Enum and Enum.CraftingOrderSortType and Enum.CraftingOrderSortType.ItemName) or 0,
-      reversed = false,
-    },
-    forCrafter = true,
+    primarySort = sort_info.primarySort,
+    secondarySort = sort_info.secondarySort,
     offset = offset or 0,
     callback = callback,
   }
 
-  C_CraftingOrders.RequestCrafterOrders(request)
+  C_CraftingOrders.ListMyOrders(request)
 end
 
 local function begin_full_guild_order_sync(notify_on_completion)
@@ -1089,6 +1216,7 @@ local function begin_full_guild_order_sync(notify_on_completion)
   guild_order_sync.notifyOnCompletion = notify_on_completion == true
   guild_order_sync.requestGeneration = guild_order_sync.requestGeneration + 1
   guild_order_sync.collectedByOrderId = {}
+  guild_order_sync.profession = current_profession_enum()
   local generation = guild_order_sync.requestGeneration
   set_guild_order_sync_button_busy(true)
 
@@ -1100,7 +1228,7 @@ local function begin_full_guild_order_sync(notify_on_completion)
     end)
   end
 
-  request_full_guild_order_sync_page(0, generation)
+  request_full_guild_order_sync_source("crafter", 0, generation)
 end
 
 local function current_character_knows_spell(spell_id)
@@ -1184,37 +1312,53 @@ local function print_matching_guild_order_reminders()
   end
 end
 
-local function get_professions_host_frame()
-  if type(ProfessionsFrame) == "table" then
-    return ProfessionsFrame
+local function get_professions_host_frames()
+  local hosts = {}
+  local seen = {}
+
+  for _, frame in ipairs({
+    ProfessionsFrame,
+    ProfessionsCustomerOrdersFrame,
+    TradeSkillFrame,
+  }) do
+    if type(frame) == "table" and not seen[frame] then
+      seen[frame] = true
+      table.insert(hosts, frame)
+    end
   end
 
-  if type(TradeSkillFrame) == "table" then
-    return TradeSkillFrame
-  end
-
-  return nil
+  return hosts
 end
 
-local function ensure_guild_order_sync_button()
-  if guild_order_sync.button then
-    return
+local function ensure_guild_order_sync_buttons()
+  for _, host_frame in ipairs(get_professions_host_frames()) do
+    if not guild_order_sync.buttons[host_frame] then
+      local button = CreateFrame("Button", nil, host_frame, "UIPanelButtonTemplate")
+      button:SetSize(140, 22)
+      button:SetPoint("TOPRIGHT", host_frame, "TOPRIGHT", -36, -28)
+      button:SetText("Sync Guild Orders")
+      button:SetScript("OnClick", function()
+        begin_full_guild_order_sync(true)
+      end)
+      guild_order_sync.buttons[host_frame] = button
+    end
   end
 
-  local host_frame = get_professions_host_frame()
-  if not host_frame then
-    return
-  end
+  set_guild_order_sync_button_busy(guild_order_sync.active)
+end
 
-  local button = CreateFrame("Button", "PuschelzGuildOrderSyncButton", host_frame, "UIPanelButtonTemplate")
-  button:SetSize(140, 22)
-  button:SetPoint("TOPRIGHT", host_frame, "TOPRIGHT", -36, -28)
-  button:SetText("Sync Guild Orders")
-  button:SetScript("OnClick", function()
-    begin_full_guild_order_sync(true)
-  end)
-  guild_order_sync.button = button
-  set_guild_order_sync_button_busy(false)
+local function schedule_passive_guild_order_capture()
+  ensure_guild_order_sync_buttons()
+
+  if C_Timer and C_Timer.After then
+    C_Timer.After(0.5, function()
+      ensure_guild_order_sync_buttons()
+      capture_visible_guild_orders(false)
+    end)
+  else
+    ensure_guild_order_sync_buttons()
+    capture_visible_guild_orders(false)
+  end
 end
 
 local function normalized_realm_name()
@@ -1841,6 +1985,8 @@ local frame = CreateFrame("Frame")
 frame:RegisterEvent("PLAYER_LOGIN")
 frame:RegisterEvent("PLAYER_GUILD_UPDATE")
 frame:RegisterEvent("TRADE_SKILL_SHOW")
+frame:RegisterEvent("CRAFTINGORDERS_SHOW_CRAFTER")
+frame:RegisterEvent("CRAFTINGORDERS_SHOW_CUSTOMER")
 frame:RegisterEvent("GUILDBANKFRAME_OPENED")
 frame:RegisterEvent("GUILDBANKBAGSLOTS_CHANGED")
 frame:RegisterEvent("CALENDAR_UPDATE_EVENT_LIST")
@@ -1874,15 +2020,11 @@ frame:SetScript("OnEvent", function(_, event, ...)
     return
   end
 
-  if event == "TRADE_SKILL_SHOW" then
-    ensure_guild_order_sync_button()
-    if C_Timer and C_Timer.After then
-      C_Timer.After(0.5, function()
-        capture_visible_guild_orders(false)
-      end)
-    else
-      capture_visible_guild_orders(false)
-    end
+  if event == "TRADE_SKILL_SHOW"
+    or event == "CRAFTINGORDERS_SHOW_CRAFTER"
+    or event == "CRAFTINGORDERS_SHOW_CUSTOMER"
+  then
+    schedule_passive_guild_order_capture()
     return
   end
 
