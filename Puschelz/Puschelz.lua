@@ -1342,16 +1342,16 @@ local function get_professions_host_frames()
   local hosts = {}
   local seen = {}
 
-  for _, frame in ipairs({
-    ProfessionsFrame,
-    ProfessionsCustomerOrdersFrame,
-    TradeSkillFrame,
-  }) do
+  local function add_host_frame(frame)
     if type(frame) == "table" and not seen[frame] then
       seen[frame] = true
       table.insert(hosts, frame)
     end
   end
+
+  add_host_frame(ProfessionsFrame)
+  add_host_frame(ProfessionsCustomerOrdersFrame)
+  add_host_frame(TradeSkillFrame)
 
   return hosts
 end
