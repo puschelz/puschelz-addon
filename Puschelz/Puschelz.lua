@@ -995,6 +995,26 @@ local function collect_visible_guild_orders()
   return sorted_guild_orders_from_map(by_order_id)
 end
 
+local function count_new_guild_orders(existing_orders, captured_orders)
+  local existing_by_order_id = {}
+  for _, order in ipairs(existing_orders or {}) do
+    local order_id = tonumber(type(order) == "table" and order.orderId or nil)
+    if order_id then
+      existing_by_order_id[order_id] = true
+    end
+  end
+
+  local new_count = 0
+  for _, order in ipairs(captured_orders or {}) do
+    local order_id = tonumber(type(order) == "table" and order.orderId or nil)
+    if order_id and not existing_by_order_id[order_id] then
+      new_count = new_count + 1
+    end
+  end
+
+  return new_count
+end
+
 local function capture_visible_guild_orders(notify_on_completion)
   if guild_order_sync.active then
     return false
@@ -1010,9 +1030,15 @@ local function capture_visible_guild_orders(notify_on_completion)
     return false
   end
 
+  local new_order_count = count_new_guild_orders(PuschelzDB.guildOrders.orders, orders)
   finalize_guild_orders_capture(orders)
   if notify_on_completion then
     print(string.format("Puschelz: captured %d visible guild order(s).", #orders))
+  elseif new_order_count > 0 then
+    print(string.format(
+      "Puschelz: found %d new guild order(s) from the currently visible orders.",
+      new_order_count
+    ))
   end
   return true
 end
