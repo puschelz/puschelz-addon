@@ -854,6 +854,19 @@ local function trim_string(value)
   return trimmed
 end
 
+local function normalize_epoch_ms(value)
+  local numeric = tonumber(value)
+  if not numeric or numeric <= 0 then
+    return nil
+  end
+
+  if numeric < 100000000000 then
+    return numeric * 1000
+  end
+
+  return numeric
+end
+
 local function sorted_guild_orders_from_map(order_map)
   local orders = {}
   for _, order in pairs(order_map or {}) do
@@ -907,7 +920,7 @@ local function normalize_guild_order(raw_order)
   local item_id = tonumber(raw_order.itemID or raw_order.itemId)
   local spell_id = tonumber(raw_order.spellID or raw_order.spellId)
   local order_state = tonumber(raw_order.orderState)
-  local expiration_time = tonumber(raw_order.expirationTime)
+  local expiration_time = normalize_epoch_ms(raw_order.expirationTime)
   if not order_id or not item_id or not spell_id or not order_state or not expiration_time then
     return nil
   end
@@ -919,7 +932,7 @@ local function normalize_guild_order(raw_order)
     orderType = "guild",
     orderState = order_state,
     expirationTime = expiration_time,
-    claimEndTime = tonumber(raw_order.claimEndTime) or nil,
+    claimEndTime = normalize_epoch_ms(raw_order.claimEndTime),
     minQuality = tonumber(raw_order.minQuality) or nil,
     tipAmount = tonumber(raw_order.tipAmount) or nil,
     consortiumCut = tonumber(raw_order.consortiumCut) or nil,
