@@ -2,7 +2,7 @@
 
 Use this for every addon release (`v0.13.1`, `v0.14.0`, ...).
 
-Main branch pushes now auto-create the next `v*` tag and trigger the release workflow.
+Main branch pushes now auto-create the next `v*` tag and publish the GitHub release in the same workflow run.
 Manual tagging is only needed for backfills, re-cuts, or one-off releases from a non-main commit.
 
 ## 1) Update version
@@ -43,7 +43,9 @@ gh release create vX.Y.Z \
   --notes "Short release notes"
 ```
 
-If `gh` fails due token/org policy, create the release manually in GitHub UI from tag `vX.Y.Z`.
+For the normal path, skip this step too; the same auto-tag workflow now publishes the release artifact immediately after pushing the tag.
+
+If you are doing a manual backfill or `gh` fails due token/org policy, create the release manually in GitHub UI from tag `vX.Y.Z`.
 
 ## 4) Validate package
 

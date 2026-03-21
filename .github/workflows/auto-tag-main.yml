@@ -61,3 +61,33 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag "$NEXT_TAG" "$GITHUB_SHA"
           git push origin "$NEXT_TAG"
+
+      - name: Sync TOC version from tag
+        if: steps.existing_tag.outputs.already_tagged != 'true'
+        env:
+          NEXT_TAG: ${{ steps.next_tag.outputs.value }}
+        run: |
+          TAG_VERSION="${NEXT_TAG#v}"
+          test -n "$TAG_VERSION"
+          sed -i -E "s/^## Version: .*/## Version: ${TAG_VERSION}/" Puschelz/Puschelz.toc
+          grep -E "^## Version: ${TAG_VERSION}$" Puschelz/Puschelz.toc
+
+      - name: Build addon zip
+        if: steps.existing_tag.outputs.already_tagged != 'true'
+        env:
+          NEXT_TAG: ${{ steps.next_tag.outputs.value }}
+        run: |
+          test -d Puschelz
+          zip -r "Puschelz-${NEXT_TAG}.zip" Puschelz
+
+      - name: Publish GitHub release + asset
+        if: steps.existing_tag.outputs.already_tagged != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.next_tag.outputs.value }}
+          files: Puschelz-${{ steps.next_tag.outputs.value }}.zip
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          append_body: true
+          body: |
+            Automated release asset for WoWUp.
