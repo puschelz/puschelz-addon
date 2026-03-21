@@ -1,0 +1,63 @@
+name: Auto Tag Main
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  tag-main:
+    if: ${{ !contains(github.event.head_commit.message, '[no release]') }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: auto-tag-main
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch tags
+        run: git fetch --force --tags origin
+
+      - name: Skip if HEAD already tagged
+        id: existing_tag
+        run: |
+          if git tag --points-at "$GITHUB_SHA" 'v*' | grep -q .; then
+            echo "already_tagged=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already_tagged=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute next tag
+        if: steps.existing_tag.outputs.already_tagged != 'true'
+        id: next_tag
+        run: |
+          latest_tag="$(git tag --list 'v*' --sort=-version:refname | head -n 1)"
+          if [ -z "$latest_tag" ]; then
+            next_tag="v0.1.0"
+          else
+            version="${latest_tag#v}"
+            major="${version%%.*}"
+            remainder="${version#*.}"
+            minor="${remainder%%.*}"
+            patch="${remainder##*.}"
+            next_tag="v${major}.${minor}.$((patch + 1))"
+          fi
+          echo "value=$next_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tag
+        if: steps.existing_tag.outputs.already_tagged != 'true'
+        env:
+          NEXT_TAG: ${{ steps.next_tag.outputs.value }}
+        run: |
+          test -n "$NEXT_TAG"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "$NEXT_TAG" "$GITHUB_SHA"
+          git push origin "$NEXT_TAG"

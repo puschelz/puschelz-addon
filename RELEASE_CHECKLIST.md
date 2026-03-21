@@ -2,6 +2,9 @@
 
 Use this for every addon release (`v0.13.1`, `v0.14.0`, ...).
 
+Main branch pushes now auto-create the next `v*` tag and trigger the release workflow.
+Manual tagging is only needed for backfills, re-cuts, or one-off releases from a non-main commit.
+
 ## 1) Update version
 
 1. Edit `Puschelz/Puschelz.toc`:
@@ -26,6 +29,8 @@ cd /home/nik/workspace/puschelz-addon
 git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
+
+For the normal path, skip this step and push to `main`; `.github/workflows/auto-tag-main.yml` creates the next patch tag automatically unless the commit message contains `[no release]`.
 
 ## 3) Publish GitHub release
 
