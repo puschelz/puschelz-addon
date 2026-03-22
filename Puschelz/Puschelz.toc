@@ -5,6 +5,7 @@
 ## IconTexture: Interface\AddOns\Puschelz\Media\puschelz-logo
 ## Author: The Puschelz
 ## Version: 0.13.0
+## OptionalDeps: PuschelzBridge
 ## SavedVariables: PuschelzDB
 
 Puschelz.lua
