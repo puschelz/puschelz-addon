@@ -2178,7 +2178,10 @@ refresh_place_order_status_widget = function()
     return
   end
 
-  if craft_request_bridge.lastWidgetStateKey == state_key and craft_request_bridge.lastWidgetRecipeKey == key then
+  if state_key ~= nil
+    and craft_request_bridge.lastWidgetStateKey == state_key
+    and craft_request_bridge.lastWidgetRecipeKey == key
+  then
     widget:Show()
     return
   end
