@@ -1,5 +1,10 @@
 package-as: Puschelz
 
+move-folders:
+  Puschelz/PuschelzBridge: PuschelzBridge
+
 ignore:
+  - .github
   - fixtures
   - README.md
+  - RELEASE_CHECKLIST.md
