@@ -28,6 +28,9 @@ end
 
 local ADDON_VERSION = resolve_addon_version()
 local RAID_STATUS_PREFIX = "PUSCHELZSTAT"
+local CRAFT_REQUEST_PREFIX = "PUSCHELZREQ"
+local CRAFT_REQUEST_MAX_MESSAGE_LENGTH = 240
+local CRAFT_REQUEST_CHUNK_TTL_MS = 30000
 local RAID_QUERY_COOLDOWN_MS = 8000
 local RAID_REPLY_TIMEOUT_MS = 4000
 local RAID_ROSTER_DEBOUNCE_SEC = 1.0
@@ -336,6 +339,19 @@ local guild_order_sync = {
   professionsFrameHooked = false,
   customerOrdersHooked = false,
 }
+
+local craft_request_bridge = {
+  prefixRegistered = false,
+  lastBroadcastSnapshotVersion = nil,
+  seenBroadcasts = {},
+  seenBroadcastCount = 0,
+  pendingChunks = {},
+  widget = nil,
+  lastWidgetRecipeKey = nil,
+  lastWidgetStateKey = nil,
+}
+
+local refresh_place_order_status_widget
 
 local function ensure_db()
   if type(PuschelzDB) ~= "table" then
@@ -1230,10 +1246,14 @@ local function install_guild_order_sync_hooks()
     then
       ProfessionsCustomerOrdersFrame.Form:HookScript("OnShow", function()
         refresh_guild_order_sync_buttons()
+        refresh_place_order_status_widget()
       end)
 
       ProfessionsCustomerOrdersFrame.Form:HookScript("OnHide", function()
         refresh_guild_order_sync_buttons()
+        if craft_request_bridge.widget then
+          craft_request_bridge.widget:Hide()
+        end
 
         if is_customer_my_orders_view_active(ProfessionsCustomerOrdersFrame) then
           schedule_passive_guild_order_capture()
@@ -1605,6 +1625,572 @@ local function local_player_identity()
   end
 
   return normalize_player_name(full_name)
+end
+
+local function red_chat_message(message)
+  if type(message) ~= "string" or message == "" then
+    return
+  end
+
+  if DEFAULT_CHAT_FRAME and DEFAULT_CHAT_FRAME.AddMessage then
+    DEFAULT_CHAT_FRAME:AddMessage(message, 1, 0.2, 0.2)
+    return
+  end
+
+  print(message)
+end
+
+local function ensure_bridge_db()
+  if type(PuschelzBridgeDB) ~= "table" then
+    PuschelzBridgeDB = {}
+  end
+  if type(PuschelzBridgeDB.recipesByKey) ~= "table" then
+    PuschelzBridgeDB.recipesByKey = {}
+  end
+  if type(PuschelzBridgeDB.openRequests) ~= "table" then
+    PuschelzBridgeDB.openRequests = {}
+  end
+end
+
+local function recipe_bridge_key(spell_id, item_id)
+  spell_id = tonumber(spell_id)
+  item_id = tonumber(item_id)
+  if not spell_id or not item_id then
+    return nil
+  end
+  return tostring(spell_id) .. ":" .. tostring(item_id)
+end
+
+local function bridge_current_character_key()
+  return local_player_identity()
+end
+
+local function bridge_character_matches(matched_keys, current_key)
+  if type(current_key) ~= "string" or current_key == "" then
+    return false
+  end
+  if type(matched_keys) ~= "table" then
+    return false
+  end
+
+  for _, candidate_key in ipairs(matched_keys) do
+    if type(candidate_key) == "string" and string.lower(candidate_key) == current_key then
+      return true
+    end
+  end
+
+  return false
+end
+
+local function active_bridge_requests_for_character()
+  ensure_bridge_db()
+  local current_key = bridge_current_character_key()
+  if not current_key then
+    return {}
+  end
+
+  local now_ms = now_epoch_ms()
+  local matches = {}
+  for _, request in ipairs(PuschelzBridgeDB.openRequests or {}) do
+    if type(request) == "table"
+      and (request.status == "pending_web" or request.status == "open_ingame")
+      and tonumber(request.expiresAt)
+      and tonumber(request.expiresAt) > now_ms
+      and bridge_character_matches(request.matchedCharacterKeys, current_key)
+    then
+      table.insert(matches, request)
+    end
+  end
+
+  table.sort(matches, function(a, b)
+    return tostring(a.itemName or "") < tostring(b.itemName or "")
+  end)
+  return matches
+end
+
+local function print_matching_bridge_requests()
+  local matching_requests = active_bridge_requests_for_character()
+  for _, request in ipairs(matching_requests) do
+    local request_id = tostring(request.requestId or "?")
+    local item_name = tostring(request.itemName or ("Item " .. tostring(request.itemId or "?")))
+    local requester = tostring(request.requesterCharacterName or "?")
+    local realm_name = tostring(request.requesterRealmName or "")
+    if realm_name ~= "" then
+      requester = requester .. "-" .. realm_name
+    end
+    red_chat_message(string.format("Puschelz: open craft request %s from %s for %s", request_id, requester, item_name))
+  end
+end
+
+local function register_craft_request_prefix()
+  if craft_request_bridge.prefixRegistered then
+    return true
+  end
+  if not C_ChatInfo or not C_ChatInfo.RegisterAddonMessagePrefix then
+    return false
+  end
+
+  craft_request_bridge.prefixRegistered =
+    C_ChatInfo.RegisterAddonMessagePrefix(CRAFT_REQUEST_PREFIX) and true or false
+  return craft_request_bridge.prefixRegistered
+end
+
+local function send_craft_request_message(payload)
+  if not C_ChatInfo or not C_ChatInfo.SendAddonMessage then
+    return false
+  end
+  if not register_craft_request_prefix() then
+    return false
+  end
+  if not IsInGuild or not IsInGuild() then
+    return false
+  end
+
+  C_ChatInfo.SendAddonMessage(CRAFT_REQUEST_PREFIX, payload, "GUILD")
+  return true
+end
+
+local function sanitize_craft_request_field(value)
+  local text = tostring(value or "")
+  text = string.gsub(text, "|", "/")
+  text = string.gsub(text, "[\r\n]", " ")
+  return text
+end
+
+local function prune_seen_craft_request_broadcasts()
+  if craft_request_bridge.seenBroadcastCount <= 300 then
+    return
+  end
+
+  local cutoff_ms = now_runtime_ms() - (10 * 60 * 1000)
+  local kept = 0
+  for key, seen_at in pairs(craft_request_bridge.seenBroadcasts) do
+    if seen_at and seen_at >= cutoff_ms then
+      kept = kept + 1
+    else
+      craft_request_bridge.seenBroadcasts[key] = nil
+    end
+  end
+  craft_request_bridge.seenBroadcastCount = kept
+end
+
+local function remember_seen_craft_request_broadcast(key)
+  if craft_request_bridge.seenBroadcasts[key] then
+    return false
+  end
+  craft_request_bridge.seenBroadcasts[key] = now_runtime_ms()
+  craft_request_bridge.seenBroadcastCount = craft_request_bridge.seenBroadcastCount + 1
+  prune_seen_craft_request_broadcasts()
+  return true
+end
+
+local function prune_pending_craft_request_chunks()
+  local cutoff_ms = now_runtime_ms() - CRAFT_REQUEST_CHUNK_TTL_MS
+  for key, entry in pairs(craft_request_bridge.pendingChunks) do
+    if type(entry) ~= "table" or not entry.receivedAtMs or entry.receivedAtMs < cutoff_ms then
+      craft_request_bridge.pendingChunks[key] = nil
+    end
+  end
+end
+
+local function payload_length_for_chunk(base_fields, chunk_index, chunk_count, key_text)
+  local fields = {
+    base_fields[1],
+    base_fields[2],
+    base_fields[3],
+    base_fields[4],
+    base_fields[5],
+    base_fields[6],
+    base_fields[7],
+    base_fields[8],
+    base_fields[9],
+    tostring(chunk_index),
+    tostring(chunk_count),
+    key_text or "",
+  }
+  return string.len(table.concat(fields, "|"))
+end
+
+local function build_craft_request_payloads(snapshot_version, request)
+  if type(request) ~= "table" or type(request.matchedCharacterKeys) ~= "table" then
+    return {}
+  end
+
+  local base_fields = {
+    "OPEN",
+    tostring(snapshot_version),
+    sanitize_craft_request_field(request.requestId),
+    tostring(request.spellId),
+    tostring(request.itemId),
+    sanitize_craft_request_field(request.itemName),
+    sanitize_craft_request_field(request.requesterCharacterName),
+    sanitize_craft_request_field(request.requesterRealmName),
+    tostring(request.expiresAt or 0),
+  }
+
+  local chunked_keys = {}
+  local current_keys = {}
+
+  local function flush_current_keys()
+    if #current_keys == 0 then
+      return
+    end
+    table.insert(chunked_keys, current_keys)
+    current_keys = {}
+  end
+
+  for _, raw_key in ipairs(request.matchedCharacterKeys) do
+    local key = sanitize_craft_request_field(raw_key)
+    if key ~= "" then
+      local candidate_keys = {}
+      for index, existing_key in ipairs(current_keys) do
+        candidate_keys[index] = existing_key
+      end
+      table.insert(candidate_keys, key)
+      local candidate_text = table.concat(candidate_keys, ",")
+      if #current_keys > 0
+        and payload_length_for_chunk(base_fields, 99, 99, candidate_text) > CRAFT_REQUEST_MAX_MESSAGE_LENGTH
+      then
+        flush_current_keys()
+        table.insert(current_keys, key)
+      else
+        current_keys = candidate_keys
+      end
+    end
+  end
+  flush_current_keys()
+
+  local payloads = {}
+  local chunk_count = #chunked_keys
+  for chunk_index, keys in ipairs(chunked_keys) do
+    local key_text = table.concat(keys, ",")
+    if payload_length_for_chunk(base_fields, chunk_index, chunk_count, key_text) <= CRAFT_REQUEST_MAX_MESSAGE_LENGTH then
+      table.insert(payloads, table.concat({
+        base_fields[1],
+        base_fields[2],
+        base_fields[3],
+        base_fields[4],
+        base_fields[5],
+        base_fields[6],
+        base_fields[7],
+        base_fields[8],
+        base_fields[9],
+        tostring(chunk_index),
+        tostring(chunk_count),
+        key_text,
+      }, "|"))
+    end
+  end
+
+  return payloads
+end
+
+local function broadcast_open_bridge_requests()
+  ensure_bridge_db()
+  local snapshot_version = tonumber(PuschelzBridgeDB.snapshotVersion)
+  if not snapshot_version or snapshot_version <= 0 then
+    return
+  end
+  if craft_request_bridge.lastBroadcastSnapshotVersion == snapshot_version then
+    return
+  end
+
+  for _, request in ipairs(PuschelzBridgeDB.openRequests or {}) do
+    if type(request) == "table"
+      and (request.status == "pending_web" or request.status == "open_ingame")
+      and type(request.requestId) == "string"
+      and type(request.itemName) == "string"
+      and tonumber(request.spellId)
+      and tonumber(request.itemId)
+      and type(request.requesterCharacterName) == "string"
+      and type(request.requesterRealmName) == "string"
+      and type(request.matchedCharacterKeys) == "table"
+      and #request.matchedCharacterKeys > 0
+    then
+      for _, payload in ipairs(build_craft_request_payloads(snapshot_version, request)) do
+        send_craft_request_message(payload)
+      end
+    end
+  end
+
+  craft_request_bridge.lastBroadcastSnapshotVersion = snapshot_version
+end
+
+local function parse_craft_request_message(message)
+  if type(message) ~= "string" then
+    return nil
+  end
+
+  local fields = {}
+  local field_start = 1
+  while true do
+    local separator_start, separator_end = string.find(message, "|", field_start, true)
+    if not separator_start then
+      table.insert(fields, string.sub(message, field_start))
+      break
+    end
+    table.insert(fields, string.sub(message, field_start, separator_start - 1))
+    field_start = separator_end + 1
+  end
+
+  if fields[1] ~= "OPEN" or #fields < 12 then
+    return nil
+  end
+
+  return {
+    messageType = fields[1],
+    snapshotVersion = tonumber(fields[2]) or 0,
+    requestId = fields[3],
+    spellId = tonumber(fields[4]),
+    itemId = tonumber(fields[5]),
+    itemName = fields[6],
+    requesterCharacterName = fields[7],
+    requesterRealmName = fields[8],
+    expiresAt = tonumber(fields[9]) or 0,
+    chunkIndex = tonumber(fields[10]) or 1,
+    chunkCount = tonumber(fields[11]) or 1,
+    matchedCharacterKeys = fields[12] or "",
+  }
+end
+
+local function split_comma_text(value)
+  local out = {}
+  if type(value) ~= "string" or value == "" then
+    return out
+  end
+  for token in string.gmatch(value, "([^,]+)") do
+    table.insert(out, token)
+  end
+  return out
+end
+
+local function handle_craft_request_addon_message(prefix, message, channel, sender)
+  if prefix ~= CRAFT_REQUEST_PREFIX then
+    return
+  end
+
+  local sender_key = select(1, normalize_player_name(sender))
+  local current_key = bridge_current_character_key()
+  if sender_key and current_key and sender_key == current_key then
+    return
+  end
+
+  local parsed = parse_craft_request_message(message)
+  if not parsed or not parsed.requestId or not parsed.spellId or not parsed.itemId then
+    return
+  end
+
+  if parsed.expiresAt <= now_epoch_ms() then
+    return
+  end
+
+  prune_pending_craft_request_chunks()
+  if parsed.chunkCount > 1 then
+    local chunk_key = tostring(parsed.snapshotVersion) .. "|" .. tostring(parsed.requestId)
+    local entry = craft_request_bridge.pendingChunks[chunk_key]
+    if type(entry) ~= "table" or tonumber(entry.chunkCount) ~= parsed.chunkCount then
+      entry = {
+        chunkCount = parsed.chunkCount,
+        chunks = {},
+      }
+      craft_request_bridge.pendingChunks[chunk_key] = entry
+    end
+    entry.receivedAtMs = now_runtime_ms()
+    entry.chunks[parsed.chunkIndex] = parsed.matchedCharacterKeys or ""
+
+    local chunk_text = {}
+    for index = 1, parsed.chunkCount do
+      if entry.chunks[index] == nil then
+        return
+      end
+      if entry.chunks[index] ~= "" then
+        table.insert(chunk_text, entry.chunks[index])
+      end
+    end
+
+    craft_request_bridge.pendingChunks[chunk_key] = nil
+    parsed.matchedCharacterKeys = table.concat(chunk_text, ",")
+  end
+
+  if not current_key then
+    return
+  end
+
+  local dedupe_key = tostring(parsed.snapshotVersion) .. "|" .. tostring(parsed.requestId)
+  if not remember_seen_craft_request_broadcast(dedupe_key) then
+    return
+  end
+
+  if not bridge_character_matches(split_comma_text(parsed.matchedCharacterKeys), current_key) then
+    return
+  end
+
+  local requester = tostring(parsed.requesterCharacterName or "?")
+  if parsed.requesterRealmName and parsed.requesterRealmName ~= "" then
+    requester = requester .. "-" .. parsed.requesterRealmName
+  end
+
+  red_chat_message(
+    string.format(
+      "Puschelz: open craft request %s from %s for %s",
+      tostring(parsed.requestId),
+      requester,
+      tostring(parsed.itemName or ("Item " .. tostring(parsed.itemId)))
+    )
+  )
+end
+
+local function extract_recipe_context(candidate)
+  if type(candidate) ~= "table" then
+    return nil, nil
+  end
+
+  local spell_id = tonumber(candidate.spellId or candidate.spellID or candidate.recipeID or candidate.recipeId)
+  local item_id =
+    tonumber(candidate.itemId or candidate.itemID or candidate.outputItemID or candidate.outputItemId)
+
+  if not item_id and type(candidate.outputItem) == "table" then
+    item_id = tonumber(candidate.outputItem.itemID or candidate.outputItem.itemId)
+  end
+
+  if spell_id and item_id then
+    return spell_id, item_id
+  end
+
+  return nil, nil
+end
+
+local function resolve_place_order_recipe_context(form)
+  if type(form) ~= "table" then
+    return nil, nil
+  end
+
+  local candidates = {
+    form,
+    form.transaction,
+    form.order,
+    form.orderInfo,
+    form.recipe,
+    form.recipeInfo,
+    form.currentRecipe,
+    form.currentSchematic,
+    form.SchematicForm,
+    form.Schematic,
+  }
+
+  for _, candidate in ipairs(candidates) do
+    local spell_id, item_id = extract_recipe_context(candidate)
+    if spell_id and item_id then
+      return spell_id, item_id
+    end
+  end
+
+  return nil, nil
+end
+
+local function ensure_craft_request_status_widget()
+  if craft_request_bridge.widget then
+    return craft_request_bridge.widget
+  end
+
+  if type(ProfessionsCustomerOrdersFrame) ~= "table"
+    or type(ProfessionsCustomerOrdersFrame.Form) ~= "table"
+    or type(ProfessionsCustomerOrdersFrame.Form.CreateFontString) ~= "function"
+  then
+    return nil
+  end
+
+  local form = ProfessionsCustomerOrdersFrame.Form
+  local widget = form:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  widget:SetJustifyH("LEFT")
+  widget:SetWidth(320)
+  widget:SetPoint("TOPLEFT", form, "TOPLEFT", 28, -54)
+  widget:Hide()
+  craft_request_bridge.widget = widget
+
+  if type(form.HookScript) == "function" then
+    form:HookScript("OnUpdate", function(self, elapsed)
+      self._puschelzCraftRequestElapsed = (self._puschelzCraftRequestElapsed or 0) + (elapsed or 0)
+      if self._puschelzCraftRequestElapsed < 0.25 then
+        return
+      end
+      self._puschelzCraftRequestElapsed = 0
+      if self.IsShown and self:IsShown() then
+        -- refreshed by the helper below; safe to call frequently
+        if refresh_place_order_status_widget then
+          refresh_place_order_status_widget()
+        end
+      end
+    end)
+  elseif type(form.SetScript) == "function" then
+    form:SetScript("OnUpdate", function(self, elapsed)
+      self._puschelzCraftRequestElapsed = (self._puschelzCraftRequestElapsed or 0) + (elapsed or 0)
+      if self._puschelzCraftRequestElapsed < 0.25 then
+        return
+      end
+      self._puschelzCraftRequestElapsed = 0
+      if self.IsShown and self:IsShown() then
+        if refresh_place_order_status_widget then
+          refresh_place_order_status_widget()
+        end
+      end
+    end)
+  end
+
+  return widget
+end
+
+refresh_place_order_status_widget = function()
+  local widget = ensure_craft_request_status_widget()
+  local form = type(ProfessionsCustomerOrdersFrame) == "table" and ProfessionsCustomerOrdersFrame.Form or nil
+  if not widget or type(form) ~= "table" or not form.IsShown or not form:IsShown() then
+    if widget then
+      widget:Hide()
+    end
+    return
+  end
+
+  local spell_id, item_id = resolve_place_order_recipe_context(form)
+  local key = recipe_bridge_key(spell_id, item_id)
+  ensure_bridge_db()
+
+  local state_key = nil
+  local text = nil
+  local color = { 1, 0.82, 0.3 }
+  if not PuschelzBridgeDB.snapshotVersion then
+    text = "Puschelz: no bridge data loaded yet."
+  elseif key and type(PuschelzBridgeDB.recipesByKey[key]) == "table" then
+    local recipe_entry = PuschelzBridgeDB.recipesByKey[key]
+    text = string.format(
+      "Puschelz: guild can fulfill this craft (%d).",
+      tonumber(recipe_entry.crafterCount) or 0
+    )
+    color = { 0.3, 1, 0.4 }
+    state_key = key .. "|yes"
+  elseif key then
+    text = "Puschelz: no guild crafter match in current data."
+    color = { 1, 0.5, 0.5 }
+    state_key = key .. "|no"
+  end
+
+  if not text then
+    widget:Hide()
+    return
+  end
+
+  if state_key ~= nil
+    and craft_request_bridge.lastWidgetStateKey == state_key
+    and craft_request_bridge.lastWidgetRecipeKey == key
+  then
+    widget:Show()
+    return
+  end
+
+  widget:SetText(text)
+  widget:SetTextColor(color[1], color[2], color[3])
+  widget:Show()
+  craft_request_bridge.lastWidgetRecipeKey = key
+  craft_request_bridge.lastWidgetStateKey = state_key
 end
 
 local function register_raid_status_prefix()
@@ -2190,11 +2776,15 @@ frame:RegisterEvent("PLAYER_LOGOUT")
 frame:SetScript("OnEvent", function(_, event, ...)
   if event == "PLAYER_LOGIN" then
     ensure_db()
+    ensure_bridge_db()
     refresh_player_metadata()
     request_calendar_scan(false)
     print_matching_guild_order_reminders()
+    print_matching_bridge_requests()
     seed_raid_random_delay()
     register_raid_status_prefix()
+    register_craft_request_prefix()
+    broadcast_open_bridge_requests()
     schedule_group_roster_update()
     return
   end
@@ -2254,6 +2844,9 @@ frame:SetScript("OnEvent", function(_, event, ...)
     local prefix, message, channel, sender = ...
     if channel == "RAID" or channel == "INSTANCE_CHAT" then
       handle_raid_addon_message(prefix, message, channel, sender)
+    end
+    if channel == "GUILD" then
+      handle_craft_request_addon_message(prefix, message, channel, sender)
     end
     return
   end
