@@ -43,13 +43,15 @@ Then configure a GitHub PAT in WoWUp and retry install/update.
 3. Open either the crafter or customer crafting-orders UI to passively snapshot currently visible guild orders; the addon prints a chat line when that passive snapshot discovers new order ids.
 4. Use the `Sync Guild Orders` button on either professions/orders window to actively request and capture visible guild orders from both the crafter and `My Orders` views.
 5. Matching open guild orders are printed into chat on login for the current character until they disappear from a later open-order scan.
-6. Raid addon coverage checks auto-refresh on raid roster changes.
-7. Run `/reload` (or log out) to flush SavedVariables to disk.
-8. Inspect `WTF/Account/<ACCOUNT>/SavedVariables/Puschelz.lua`.
+6. Required raid addons from the website bridge are checked against active addon folders on login or `/reload`; missing entries print red chat warnings once per changed bridge/missing set.
+7. Raid addon coverage checks auto-refresh on raid roster changes.
+8. Run `/reload` (or log out) to flush SavedVariables to disk.
+9. Inspect `WTF/Account/<ACCOUNT>/SavedVariables/Puschelz.lua`.
 
 ## Slash commands
 
 - `/puschelz status` (or `/pz`) shows captured counts and last scan times.
+- `/puschelz addons` prints the current required-addon compliance summary and missing entries.
 - `/puschelz scan` triggers a manual bank + calendar scan.
 - `/puschelz orders` reprints open guild-order reminders that match the current character.
 - `/puschelz syncorders` runs a full guild-order sync request.
