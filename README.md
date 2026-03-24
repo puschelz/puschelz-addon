@@ -1,5 +1,8 @@
 # Puschelz WoW Addon (V15)
 
+[![CurseForge Addon Name](https://cf.way2muchnoise.eu/title/1492984.svg)](https://curseforge.com/wow/addons/puschelz)
+[![CurseForge Downloads](https://cf.way2muchnoise.eu/1492984.svg)](https://curseforge.com/wow/addons/puschelz)
+
 Retail WoW addon bundle for guild sync. The release ships as one user-facing install package, but it contains two addon folders internally:
 
 - `Puschelz/` for in-game data capture and UI
