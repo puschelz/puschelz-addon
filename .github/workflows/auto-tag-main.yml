@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
 
+env:
+  CURSEFORGE_API_KEY: ${{ secrets.CURSEFORGE_API_KEY }}
+
 jobs:
   tag-main:
     if: ${{ !contains(github.event.head_commit.message, '[no release]') }}
@@ -94,8 +97,7 @@ jobs:
             Automated bundled release asset for WoWUp. This zip contains both `Puschelz/` and `PuschelzBridge/` and should be installed as one addon package.
 
       - name: Upload bundled zip to CurseForge
-        if: ${{ steps.existing_tag.outputs.already_tagged != 'true' && secrets.CURSEFORGE_API_KEY != '' }}
+        if: ${{ steps.existing_tag.outputs.already_tagged != 'true' && env.CURSEFORGE_API_KEY != '' }}
         env:
-          CURSEFORGE_API_KEY: ${{ secrets.CURSEFORGE_API_KEY }}
           CURSEFORGE_TAG_NAME: ${{ steps.next_tag.outputs.value }}
         run: bash scripts/upload-curseforge.sh
