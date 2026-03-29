@@ -1792,6 +1792,8 @@ local function refresh_bridge_debug_snapshot()
     addonLoaded = is_addon_loaded_by_name("PuschelzBridge") and true or false,
     snapshotVersion = tonumber(PuschelzBridgeDB and PuschelzBridgeDB.snapshotVersion),
     requiredAddonsVersion = tonumber(PuschelzBridgeDB and PuschelzBridgeDB.requiredAddonsVersion),
+    requiredAddonsConfiguredCount = tonumber(PuschelzBridgeDB and PuschelzBridgeDB.requiredAddonsConfiguredCount),
+    invalidRequiredAddonCount = tonumber(PuschelzBridgeDB and PuschelzBridgeDB.invalidRequiredAddonCount),
     generatedAt = tonumber(PuschelzBridgeDB and PuschelzBridgeDB.generatedAt),
     recipeCount = count_table_entries(PuschelzBridgeDB and PuschelzBridgeDB.recipesByKey),
     openRequestCount = type(PuschelzBridgeDB and PuschelzBridgeDB.openRequests) == "table" and #PuschelzBridgeDB.openRequests or 0,
@@ -1964,6 +1966,8 @@ local function summarize_required_addon_compliance()
   local active_addons = build_active_addon_lookup()
   local missing = {}
   local required_count = 0
+  local configured_count = tonumber(PuschelzBridgeDB.requiredAddonsConfiguredCount) or 0
+  local invalid_configured_count = tonumber(PuschelzBridgeDB.invalidRequiredAddonCount) or 0
 
   for _, addon in ipairs(PuschelzBridgeDB.requiredAddons or {}) do
     if type(addon) == "table" and type(addon.name) == "string" then
@@ -1997,6 +2001,8 @@ local function summarize_required_addon_compliance()
 
   local hash_parts = {
     tostring(tonumber(PuschelzBridgeDB.requiredAddonsVersion) or 0),
+    tostring(configured_count),
+    tostring(invalid_configured_count),
   }
   for _, addon in ipairs(missing) do
     table.insert(hash_parts, addon.addonId)
@@ -2005,6 +2011,8 @@ local function summarize_required_addon_compliance()
 
   return {
     requiredAddonsVersion = tonumber(PuschelzBridgeDB.requiredAddonsVersion) or 0,
+    configuredCount = configured_count,
+    invalidConfiguredCount = invalid_configured_count,
     requiredCount = required_count,
     missingCount = #missing,
     satisfiedCount = required_count - #missing,
@@ -2031,19 +2039,38 @@ local function print_required_addon_status(verbose)
   local version_text = summary.requiredAddonsVersion > 0 and tostring(summary.requiredAddonsVersion) or "n/a"
 
   if summary.requiredCount == 0 then
-    print(string.format("Puschelz: requiredAddons=0, missing=0, bridgeVersion=%s", version_text))
+    print(
+      string.format(
+        "Puschelz: requiredAddons=0, missing=0, invalidBridgeConfigs=%d, bridgeVersion=%s",
+        summary.invalidConfiguredCount,
+        version_text
+      )
+    )
+    if summary.invalidConfiguredCount > 0 then
+      print("Puschelz: required addon definitions are misconfigured on the website. Missing bridge folder names.")
+    end
     return summary
   end
 
   print(
     string.format(
-      "Puschelz: requiredAddons=%d, satisfied=%d, missing=%d, bridgeVersion=%s",
+      "Puschelz: requiredAddons=%d, satisfied=%d, missing=%d, invalidBridgeConfigs=%d, bridgeVersion=%s",
       summary.requiredCount,
       summary.satisfiedCount,
       summary.missingCount,
+      summary.invalidConfiguredCount,
       version_text
     )
   )
+
+  if summary.invalidConfiguredCount > 0 then
+    print(
+      string.format(
+        "Puschelz: bridge skipped %d required addon definition(s) with missing folder names.",
+        summary.invalidConfiguredCount
+      )
+    )
+  end
 
   if summary.missingCount == 0 then
     if verbose then
@@ -2063,7 +2090,7 @@ local function warn_missing_required_addons_if_needed()
   local summary = summarize_required_addon_compliance()
   craft_request_bridge.requiredAddonSummaryKey = summary.summaryKey
 
-  if summary.requiredCount == 0 or summary.missingCount == 0 then
+  if summary.invalidConfiguredCount == 0 and (summary.requiredCount == 0 or summary.missingCount == 0) then
     return
   end
 
@@ -2078,12 +2105,23 @@ local function warn_missing_required_addons_if_needed()
   persisted.lastWarnedVersion = version_text
   persisted.updatedAt = now_epoch_ms()
 
-  red_chat_message(
-    string.format(
-      "Puschelz: %d required addon(s) missing. Use /puschelz addons for details.",
-      summary.missingCount
+  if summary.invalidConfiguredCount > 0 then
+    red_chat_message(
+      string.format(
+        "Puschelz: %d required addon definition(s) are misconfigured on the website and skipped. Use /puschelz addons.",
+        summary.invalidConfiguredCount
+      )
     )
-  )
+  end
+
+  if summary.missingCount > 0 then
+    red_chat_message(
+      string.format(
+        "Puschelz: %d required addon(s) missing. Use /puschelz addons for details.",
+        summary.missingCount
+      )
+    )
+  end
 
   for _, addon in ipairs(summary.missing) do
     red_chat_message(string.format("Puschelz: missing %s", format_required_addon_entry(addon)))
@@ -3298,10 +3336,11 @@ local function print_status()
     or "n/a"
   print(
     string.format(
-      "Puschelz: requiredAddons=%d, satisfied=%d, missing=%d, bridgeVersion=%s",
+      "Puschelz: requiredAddons=%d, satisfied=%d, missing=%d, invalidBridgeConfigs=%d, bridgeVersion=%s",
       required_addon_summary.requiredCount,
       required_addon_summary.satisfiedCount,
       required_addon_summary.missingCount,
+      required_addon_summary.invalidConfiguredCount,
       version_text
     )
   )
