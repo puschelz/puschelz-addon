@@ -1,12 +1,14 @@
 local ADDON_NAME = ...
 
-local SCHEMA_VERSION = 15
+local SCHEMA_VERSION = 16
 local GUILD_BANK_SLOTS_PER_TAB = 98
 local CALENDAR_MONTH_OFFSETS = { -1, 0, 1, 2 }
 local GUILD_ORDER_TYPE_GUILD = 1
 local GUILD_ORDER_STATE_FULFILLED = 11
 local GUILD_ORDER_STATE_CANCELED = 13
 local GUILD_ORDER_STATE_EXPIRED = 15
+local MINIMAP_BUTTON_DEFAULT_ANGLE = 220
+local MINIMAP_BUTTON_RADIUS = 80
 
 local function resolve_addon_version()
   local version
@@ -341,6 +343,13 @@ local calendar_sync_ui = {
   stateGeneration = 0,
 }
 
+local minimap_ui = {
+  button = nil,
+  dropdown = nil,
+  dragging = false,
+  suppressClickUntilMs = 0,
+}
+
 local guild_order_sync = {
   active = false,
   notifyOnCompletion = false,
@@ -377,6 +386,9 @@ local craft_request_bridge = {
 local refresh_place_order_status_widget
 local reset_minimum_quality_status
 local extract_recipe_context
+local ensure_minimap_button
+local refresh_minimap_button_position
+local trim_text
 
 local function set_selected_bridge_recipe(spell_id, item_id, source)
   craft_request_bridge.selectionGeneration = (craft_request_bridge.selectionGeneration or 0) + 1
@@ -450,6 +462,16 @@ local function ensure_db()
 
   if type(PuschelzDB.requiredAddonCompliance) ~= "table" then
     PuschelzDB.requiredAddonCompliance = {}
+  end
+
+  if type(PuschelzDB.ui) ~= "table" then
+    PuschelzDB.ui = {}
+  end
+  if type(PuschelzDB.ui.minimapButton) ~= "table" then
+    PuschelzDB.ui.minimapButton = {}
+  end
+  if type(PuschelzDB.ui.minimapButton.angle) ~= "number" then
+    PuschelzDB.ui.minimapButton.angle = MINIMAP_BUTTON_DEFAULT_ANGLE
   end
 end
 
@@ -1992,30 +2014,137 @@ local function is_addon_loaded_by_name(addon_name)
   return false
 end
 
-local function try_load_bridge_addon()
-  local was_loaded = is_addon_loaded_by_name("PuschelzBridge")
+local function try_load_addon_by_name(addon_name)
+  if type(addon_name) ~= "string" or addon_name == "" then
+    return false, "missing_name"
+  end
+
+  local was_loaded = is_addon_loaded_by_name(addon_name)
   if was_loaded then
     return true, "already_loaded"
   end
 
   local loaded, reason
   if C_AddOns and C_AddOns.LoadAddOn then
-    loaded, reason = C_AddOns.LoadAddOn("PuschelzBridge")
+    loaded, reason = C_AddOns.LoadAddOn(addon_name)
     if loaded == nil then
-      loaded = is_addon_loaded_by_name("PuschelzBridge")
+      loaded = is_addon_loaded_by_name(addon_name)
     end
     return loaded and true or false, tostring(reason or "unknown")
   end
 
   if LoadAddOn then
-    loaded, reason = LoadAddOn("PuschelzBridge")
+    loaded, reason = LoadAddOn(addon_name)
     if loaded == nil then
-      loaded = is_addon_loaded_by_name("PuschelzBridge")
+      loaded = is_addon_loaded_by_name(addon_name)
     end
     return loaded and true or false, tostring(reason or "unknown")
   end
 
   return false, "load_api_unavailable"
+end
+
+local function try_load_bridge_addon()
+  return try_load_addon_by_name("PuschelzBridge")
+end
+
+local function has_simulationcraft_exporter()
+  if not is_addon_loaded_by_name("Simulationcraft") then
+    try_load_addon_by_name("Simulationcraft")
+  end
+
+  if type(Simulationcraft) == "table" and type(Simulationcraft.GetSimcProfile) == "function" then
+    return true
+  end
+
+  if type(SimulationcraftAPI) == "table"
+    and type(SimulationcraftAPI.GetSimcProfile) == "function"
+    and type(Simulationcraft) == "table"
+  then
+    return true
+  end
+
+  return false
+end
+
+local function build_simc_request_id()
+  local guid = UnitGUID and UnitGUID("player") or "player"
+  local sanitized_guid = tostring(guid or "player"):gsub("[^%w]", "")
+  return string.format("simc-%s-%d-%04d", sanitized_guid, now_epoch_ms(), math.random(0, 9999))
+end
+
+local function capture_current_simc_profile()
+  if not has_simulationcraft_exporter() then
+    return nil, "SimulationCraft addon is required for SimC sync."
+  end
+
+  local ok, profile, simc_error
+  if type(Simulationcraft) == "table" and type(Simulationcraft.GetSimcProfile) == "function" then
+    ok, profile, simc_error = pcall(function()
+      return Simulationcraft:GetSimcProfile(false, true, false, false)
+    end)
+  else
+    ok, profile, simc_error = pcall(
+      SimulationcraftAPI.GetSimcProfile,
+      Simulationcraft,
+      false,
+      true,
+      false,
+      false
+    )
+  end
+
+  if not ok then
+    return nil, tostring(profile or "SimulationCraft export failed.")
+  end
+
+  local trimmed_profile = trim_text(profile)
+  if not trimmed_profile then
+    local trimmed_error = trim_text(simc_error)
+    if trimmed_error then
+      return nil, trimmed_error
+    end
+    return nil, "SimulationCraft did not return a SimC profile."
+  end
+
+  return trimmed_profile, nil
+end
+
+local function queue_simc_profile_request(run_droptimizer_now)
+  ensure_db()
+  refresh_player_metadata()
+
+  local profile_text, profile_error = capture_current_simc_profile()
+  if not profile_text then
+    red_chat_message(string.format("Puschelz: %s", tostring(profile_error or "SimC export failed.")))
+    return false
+  end
+
+  local requested_at = now_epoch_ms()
+  local character_name = trim_text(PuschelzDB.player.characterName) or trim_text(UnitName and UnitName("player"))
+  local realm_name = trim_text(PuschelzDB.player.realmName) or trim_text(GetRealmName and GetRealmName())
+  if not character_name or not realm_name then
+    red_chat_message("Puschelz: could not resolve the current character for SimC sync.")
+    return false
+  end
+
+  PuschelzDB.simcRequest = {
+    requestId = build_simc_request_id(),
+    requestedAt = requested_at,
+    characterName = character_name,
+    realmName = realm_name,
+    profileText = profile_text,
+    runDroptimizerNow = run_droptimizer_now == true,
+  }
+  PuschelzDB.updatedAt = requested_at
+
+  if run_droptimizer_now then
+    print("Puschelz: queued SimC export for sync. Run /reload or log out so the desktop client can upload it and start a Mythic Droptimizer run.")
+  else
+    print("Puschelz: queued SimC export for sync. Run /reload or log out so the desktop client can upload it.")
+  end
+
+  return true
 end
 
 local function refresh_bridge_debug_snapshot()
@@ -2068,7 +2197,7 @@ local function ensure_bridge_db()
   end
 end
 
-local function trim_text(value)
+trim_text = function(value)
   if type(value) ~= "string" then
     return nil
   end
@@ -3541,12 +3670,197 @@ local function seed_raid_random_delay()
   math.random()
 end
 
+local function minimap_angle_to_radians(angle)
+  return math.rad(tonumber(angle) or MINIMAP_BUTTON_DEFAULT_ANGLE)
+end
+
+local function minimap_radians_from_cursor()
+  if not Minimap or not Minimap.GetCenter then
+    return minimap_angle_to_radians(MINIMAP_BUTTON_DEFAULT_ANGLE)
+  end
+
+  local cursor_x, cursor_y = GetCursorPosition()
+  local scale = Minimap:GetEffectiveScale() or 1
+  cursor_x = cursor_x / scale
+  cursor_y = cursor_y / scale
+
+  local center_x, center_y = Minimap:GetCenter()
+  local delta_x = cursor_x - center_x
+  local delta_y = cursor_y - center_y
+
+  if delta_x == 0 and delta_y == 0 then
+    return minimap_angle_to_radians(MINIMAP_BUTTON_DEFAULT_ANGLE)
+  end
+
+  if math.atan2 then
+    return math.atan2(delta_y, delta_x)
+  end
+
+  if delta_x > 0 then
+    return math.atan(delta_y / delta_x)
+  end
+
+  if delta_x < 0 and delta_y >= 0 then
+    return math.atan(delta_y / delta_x) + math.pi
+  end
+
+  if delta_x < 0 and delta_y < 0 then
+    return math.atan(delta_y / delta_x) - math.pi
+  end
+
+  if delta_y > 0 then
+    return math.pi / 2
+  end
+
+  return -math.pi / 2
+end
+
+refresh_minimap_button_position = function()
+  ensure_db()
+  local button = minimap_ui.button
+  if not button or not Minimap then
+    return
+  end
+
+  local angle = tonumber(PuschelzDB.ui.minimapButton.angle) or MINIMAP_BUTTON_DEFAULT_ANGLE
+  local radians = minimap_angle_to_radians(angle)
+  button:ClearAllPoints()
+  button:SetPoint(
+    "CENTER",
+    Minimap,
+    "CENTER",
+    math.cos(radians) * MINIMAP_BUTTON_RADIUS,
+    math.sin(radians) * MINIMAP_BUTTON_RADIUS
+  )
+end
+
+local function update_minimap_button_angle_from_cursor()
+  ensure_db()
+  local radians = minimap_radians_from_cursor()
+  local angle = math.deg(radians)
+  if angle < 0 then
+    angle = angle + 360
+  end
+  PuschelzDB.ui.minimapButton.angle = angle
+  refresh_minimap_button_position()
+end
+
+local function show_minimap_menu()
+  if not EasyMenu then
+    return
+  end
+
+  if not minimap_ui.dropdown then
+    minimap_ui.dropdown = CreateFrame("Frame", "PuschelzMinimapDropdown", UIParent, "UIDropDownMenuTemplate")
+  end
+
+  local has_simc = has_simulationcraft_exporter()
+  local simc_label = has_simc
+    and "Sync SimC to backend"
+    or "Sync SimC to backend (requires SimulationCraft)"
+  local droptimizer_label = has_simc
+    and "Run Droptimizer now"
+    or "Run Droptimizer now (requires SimulationCraft)"
+
+  local menu_items = {
+    { text = "Puschelz", isTitle = true, notCheckable = true },
+    {
+      text = "Sync Calendar",
+      notCheckable = true,
+      func = function()
+        request_calendar_scan(true)
+      end,
+    },
+  }
+
+  if is_any_guild_order_view_active() then
+    table.insert(menu_items, {
+      text = "Sync Guild Orders",
+      notCheckable = true,
+      func = function()
+        begin_full_guild_order_sync(true)
+      end,
+    })
+  end
+
+  table.insert(menu_items, {
+    text = simc_label,
+    notCheckable = true,
+    disabled = not has_simc,
+    func = function()
+      queue_simc_profile_request(false)
+    end,
+  })
+  table.insert(menu_items, {
+    text = droptimizer_label,
+    notCheckable = true,
+    disabled = not has_simc,
+    func = function()
+      queue_simc_profile_request(true)
+    end,
+  })
+
+  EasyMenu(menu_items, minimap_ui.dropdown, "cursor", 0, 0, "MENU", 2)
+end
+
+ensure_minimap_button = function()
+  if minimap_ui.button or not Minimap then
+    refresh_minimap_button_position()
+    return minimap_ui.button
+  end
+
+  local button = CreateFrame("Button", "PuschelzMinimapButton", Minimap)
+  button:SetSize(32, 32)
+  button:SetFrameStrata("MEDIUM")
+  button:SetFrameLevel((Minimap:GetFrameLevel() or 1) + 8)
+  button:SetMovable(true)
+  button:EnableMouse(true)
+  button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+  button:RegisterForDrag("LeftButton")
+  button:SetClampedToScreen(true)
+
+  local icon = button:CreateTexture(nil, "ARTWORK")
+  icon:SetTexture("Interface\\AddOns\\Puschelz\\Media\\puschelz-logo")
+  icon:SetSize(20, 20)
+  icon:SetPoint("CENTER", button, "CENTER", 0, 0)
+  icon:SetTexCoord(0.05, 0.95, 0.05, 0.95)
+
+  local border = button:CreateTexture(nil, "OVERLAY")
+  border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+  border:SetSize(54, 54)
+  border:SetPoint("CENTER", button, "CENTER", 0, 0)
+
+  button:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+  button:SetScript("OnDragStart", function(self)
+    minimap_ui.dragging = true
+    self:SetScript("OnUpdate", update_minimap_button_angle_from_cursor)
+  end)
+  button:SetScript("OnDragStop", function(self)
+    minimap_ui.dragging = false
+    minimap_ui.suppressClickUntilMs = now_runtime_ms() + 250
+    self:SetScript("OnUpdate", nil)
+    update_minimap_button_angle_from_cursor()
+  end)
+  button:SetScript("OnClick", function()
+    if minimap_ui.dragging or now_runtime_ms() < (minimap_ui.suppressClickUntilMs or 0) then
+      return
+    end
+    show_minimap_menu()
+  end)
+
+  minimap_ui.button = button
+  refresh_minimap_button_position()
+  button:Show()
+  return button
+end
+
 local function print_status()
   ensure_db()
 
   local bank_tabs = PuschelzDB.guildBank.tabs or {}
   local calendar_events = PuschelzDB.calendar.events or {}
   local guild_orders = PuschelzDB.guildOrders.orders or {}
+  local simc_request = type(PuschelzDB.simcRequest) == "table" and PuschelzDB.simcRequest or nil
   local required_addon_summary = summarize_required_addon_compliance()
 
   local bank_scan = PuschelzDB.guildBank.lastScannedAt
@@ -3564,6 +3878,19 @@ local function print_status()
       guild_order_scan and date("%Y-%m-%d %H:%M", math.floor(guild_order_scan / 1000)) or "never"
     )
   )
+
+  if simc_request and type(simc_request.requestId) == "string" and simc_request.requestId ~= "" then
+    local simc_request_at = tonumber(simc_request.requestedAt)
+    local simc_mode = simc_request.runDroptimizerNow and "droptimizer" or "upload"
+    print(
+      string.format(
+        "Puschelz: pendingSimC=%s (%s, %s)",
+        simc_request.requestId,
+        simc_mode,
+        simc_request_at and date("%Y-%m-%d %H:%M", math.floor(simc_request_at / 1000)) or "unknown"
+      )
+    )
+  end
 
   local version_text = required_addon_summary.requiredAddonsVersion > 0
     and tostring(required_addon_summary.requiredAddonsVersion)
@@ -3661,6 +3988,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
     ensure_db()
     ensure_bridge_db()
     refresh_player_metadata()
+    ensure_minimap_button()
     print_matching_guild_order_reminders()
     print_matching_bridge_requests()
     warn_missing_required_addons_if_needed()
@@ -3715,6 +4043,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
   end
 
   if event == "PLAYER_ENTERING_WORLD" then
+    refresh_minimap_button_position()
     schedule_group_roster_update()
     return
   end
