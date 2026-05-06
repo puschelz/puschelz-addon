@@ -349,7 +349,6 @@ local minimap_ui = {
   dragging = false,
   suppressClickUntilMs = 0,
 }
-
 local guild_order_sync = {
   active = false,
   notifyOnCompletion = false,
