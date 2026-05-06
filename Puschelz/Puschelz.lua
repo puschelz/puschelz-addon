@@ -8,7 +8,10 @@ local GUILD_ORDER_STATE_FULFILLED = 11
 local GUILD_ORDER_STATE_CANCELED = 13
 local GUILD_ORDER_STATE_EXPIRED = 15
 local MINIMAP_BUTTON_DEFAULT_ANGLE = 220
-local MINIMAP_BUTTON_RADIUS = 80
+local MINIMAP_LDB_NAME = "Puschelz"
+local MINIMAP_ICON_PATH = "Interface\\AddOns\\Puschelz\\Media\\puschelz-logo"
+local LDB = LibStub and LibStub("LibDataBroker-1.1", true)
+local MINIMAP_ICON = LibStub and LibStub("LibDBIcon-1.0", true)
 
 local function resolve_addon_version()
   local version
@@ -345,10 +348,10 @@ local calendar_sync_ui = {
 
 local minimap_ui = {
   button = nil,
+  dataObject = nil,
   dropdown = nil,
-  dragging = false,
-  suppressClickUntilMs = 0,
 }
+
 local guild_order_sync = {
   active = false,
   notifyOnCompletion = false,
@@ -471,6 +474,9 @@ local function ensure_db()
   end
   if type(PuschelzDB.ui.minimapButton.angle) ~= "number" then
     PuschelzDB.ui.minimapButton.angle = MINIMAP_BUTTON_DEFAULT_ANGLE
+  end
+  if type(PuschelzDB.ui.minimapButton.minimapPos) ~= "number" then
+    PuschelzDB.ui.minimapButton.minimapPos = PuschelzDB.ui.minimapButton.angle
   end
 end
 
@@ -3669,79 +3675,15 @@ local function seed_raid_random_delay()
   math.random()
 end
 
-local function minimap_angle_to_radians(angle)
-  return math.rad(tonumber(angle) or MINIMAP_BUTTON_DEFAULT_ANGLE)
-end
-
-local function minimap_radians_from_cursor()
-  if not Minimap or not Minimap.GetCenter then
-    return minimap_angle_to_radians(MINIMAP_BUTTON_DEFAULT_ANGLE)
-  end
-
-  local cursor_x, cursor_y = GetCursorPosition()
-  local scale = Minimap:GetEffectiveScale() or 1
-  cursor_x = cursor_x / scale
-  cursor_y = cursor_y / scale
-
-  local center_x, center_y = Minimap:GetCenter()
-  local delta_x = cursor_x - center_x
-  local delta_y = cursor_y - center_y
-
-  if delta_x == 0 and delta_y == 0 then
-    return minimap_angle_to_radians(MINIMAP_BUTTON_DEFAULT_ANGLE)
-  end
-
-  if math.atan2 then
-    return math.atan2(delta_y, delta_x)
-  end
-
-  if delta_x > 0 then
-    return math.atan(delta_y / delta_x)
-  end
-
-  if delta_x < 0 and delta_y >= 0 then
-    return math.atan(delta_y / delta_x) + math.pi
-  end
-
-  if delta_x < 0 and delta_y < 0 then
-    return math.atan(delta_y / delta_x) - math.pi
-  end
-
-  if delta_y > 0 then
-    return math.pi / 2
-  end
-
-  return -math.pi / 2
-end
-
 refresh_minimap_button_position = function()
   ensure_db()
-  local button = minimap_ui.button
-  if not button or not Minimap then
+  if not MINIMAP_ICON or not MINIMAP_ICON.IsRegistered or not MINIMAP_ICON:IsRegistered(MINIMAP_LDB_NAME) then
     return
   end
 
-  local angle = tonumber(PuschelzDB.ui.minimapButton.angle) or MINIMAP_BUTTON_DEFAULT_ANGLE
-  local radians = minimap_angle_to_radians(angle)
-  button:ClearAllPoints()
-  button:SetPoint(
-    "CENTER",
-    Minimap,
-    "CENTER",
-    math.cos(radians) * MINIMAP_BUTTON_RADIUS,
-    math.sin(radians) * MINIMAP_BUTTON_RADIUS
-  )
-end
-
-local function update_minimap_button_angle_from_cursor()
-  ensure_db()
-  local radians = minimap_radians_from_cursor()
-  local angle = math.deg(radians)
-  if angle < 0 then
-    angle = angle + 360
-  end
-  PuschelzDB.ui.minimapButton.angle = angle
-  refresh_minimap_button_position()
+  PuschelzDB.ui.minimapButton.angle = tonumber(PuschelzDB.ui.minimapButton.minimapPos) or PuschelzDB.ui.minimapButton.angle
+  MINIMAP_ICON:Refresh(MINIMAP_LDB_NAME, PuschelzDB.ui.minimapButton)
+  minimap_ui.button = MINIMAP_ICON:GetMinimapButton(MINIMAP_LDB_NAME)
 end
 
 local function show_minimap_menu()
@@ -3802,55 +3744,83 @@ local function show_minimap_menu()
   EasyMenu(menu_items, minimap_ui.dropdown, "cursor", 0, 0, "MENU", 2)
 end
 
+local function show_addon_compartment_tooltip(button)
+  if not button then
+    return
+  end
+
+  GameTooltip:SetOwner(button, "ANCHOR_LEFT")
+  GameTooltip:AddLine("Puschelz", 1, 0.82, 0, true)
+  GameTooltip:AddLine(" ")
+  GameTooltip:AddLine("Open the sync menu for calendar, guild orders, and SimC export actions.", 1, 1, 1, true)
+  GameTooltip:AddLine(" ")
+  GameTooltip:AddLine("Click to open the sync menu.", 0.8, 0.8, 0.8)
+  GameTooltip:Show()
+end
+
+local function hide_addon_compartment_tooltip()
+  GameTooltip:Hide()
+end
+
+function PuschelzAddonCompartment_Click(_, button_name)
+  if type(button_name) ~= "string" or button_name == "" then
+    button_name = "LeftButton"
+  end
+  show_minimap_menu()
+end
+
+function PuschelzAddonCompartment_OnEnter(_, button)
+  show_addon_compartment_tooltip(button)
+end
+
+function PuschelzAddonCompartment_OnLeave()
+  hide_addon_compartment_tooltip()
+end
+
 ensure_minimap_button = function()
-  if minimap_ui.button or not Minimap then
+  if not LDB or not MINIMAP_ICON then
+    return nil
+  end
+
+  ensure_db()
+
+  if minimap_ui.button and MINIMAP_ICON.IsRegistered and MINIMAP_ICON:IsRegistered(MINIMAP_LDB_NAME) then
     refresh_minimap_button_position()
     return minimap_ui.button
   end
 
-  local button = CreateFrame("Button", "PuschelzMinimapButton", Minimap)
-  button:SetSize(32, 32)
-  button:SetFrameStrata("MEDIUM")
-  button:SetFrameLevel((Minimap:GetFrameLevel() or 1) + 8)
-  button:SetMovable(true)
-  button:EnableMouse(true)
-  button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-  button:RegisterForDrag("LeftButton")
-  button:SetClampedToScreen(true)
+  if not minimap_ui.dataObject then
+    minimap_ui.dataObject = LDB:NewDataObject(MINIMAP_LDB_NAME, {
+      type = "launcher",
+      text = "Puschelz",
+      icon = MINIMAP_ICON_PATH,
+      OnClick = function(_, button_name)
+        if type(button_name) ~= "string" or button_name == "" then
+          button_name = "LeftButton"
+        end
+        show_minimap_menu()
+      end,
+      OnTooltipShow = function(tooltip)
+        if not tooltip or type(tooltip.AddLine) ~= "function" then
+          return
+        end
+        tooltip:AddLine("Puschelz")
+        tooltip:AddLine(" ")
+        tooltip:AddLine("Open the sync menu for calendar, guild orders, and SimC export actions.", 1, 1, 1, true)
+        tooltip:AddLine(" ")
+        tooltip:AddLine("Click to open the sync menu.", 0.8, 0.8, 0.8)
+        tooltip:AddLine("Drag to move the minimap button.", 0.8, 0.8, 0.8)
+      end,
+    })
+  end
 
-  local icon = button:CreateTexture(nil, "ARTWORK")
-  icon:SetTexture("Interface\\AddOns\\Puschelz\\Media\\puschelz-logo")
-  icon:SetSize(20, 20)
-  icon:SetPoint("CENTER", button, "CENTER", 0, 0)
-  icon:SetTexCoord(0.05, 0.95, 0.05, 0.95)
+  if not MINIMAP_ICON:IsRegistered(MINIMAP_LDB_NAME) then
+    MINIMAP_ICON:Register(MINIMAP_LDB_NAME, minimap_ui.dataObject, PuschelzDB.ui.minimapButton)
+  end
 
-  local border = button:CreateTexture(nil, "OVERLAY")
-  border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
-  border:SetSize(54, 54)
-  border:SetPoint("CENTER", button, "CENTER", 0, 0)
-
-  button:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
-  button:SetScript("OnDragStart", function(self)
-    minimap_ui.dragging = true
-    self:SetScript("OnUpdate", update_minimap_button_angle_from_cursor)
-  end)
-  button:SetScript("OnDragStop", function(self)
-    minimap_ui.dragging = false
-    minimap_ui.suppressClickUntilMs = now_runtime_ms() + 250
-    self:SetScript("OnUpdate", nil)
-    update_minimap_button_angle_from_cursor()
-  end)
-  button:SetScript("OnClick", function()
-    if minimap_ui.dragging or now_runtime_ms() < (minimap_ui.suppressClickUntilMs or 0) then
-      return
-    end
-    show_minimap_menu()
-  end)
-
-  minimap_ui.button = button
   refresh_minimap_button_position()
-  button:Show()
-  return button
+  minimap_ui.button = MINIMAP_ICON:GetMinimapButton(MINIMAP_LDB_NAME)
+  return minimap_ui.button
 end
 
 local function print_status()
@@ -4065,6 +4035,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
 
   if event == "PLAYER_LOGOUT" then
     ensure_db()
+    PuschelzDB.ui.minimapButton.angle = tonumber(PuschelzDB.ui.minimapButton.minimapPos) or PuschelzDB.ui.minimapButton.angle
     PuschelzDB.updatedAt = now_epoch_ms()
   end
 end)
