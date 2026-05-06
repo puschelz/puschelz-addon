@@ -3750,6 +3750,7 @@ local function show_addon_compartment_tooltip(button)
   end
 
   GameTooltip:SetOwner(button, "ANCHOR_LEFT")
+  GameTooltip:ClearLines()
   GameTooltip:AddLine("Puschelz", 1, 0.82, 0, true)
   GameTooltip:AddLine(" ")
   GameTooltip:AddLine("Open the sync menu for calendar, guild orders, and SimC export actions.", 1, 1, 1, true)
@@ -3804,6 +3805,7 @@ ensure_minimap_button = function()
         if not tooltip or type(tooltip.AddLine) ~= "function" then
           return
         end
+        tooltip:ClearLines()
         tooltip:AddLine("Puschelz")
         tooltip:AddLine(" ")
         tooltip:AddLine("Open the sync menu for calendar, guild orders, and SimC export actions.", 1, 1, 1, true)
