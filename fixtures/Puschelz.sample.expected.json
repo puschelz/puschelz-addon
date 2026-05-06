@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 15,
+  "schemaVersion": 16,
   "updatedAt": 1739400000000,
   "player": {
     "characterName": "Fluffybear",
@@ -83,5 +83,13 @@
         "outputItemHyperlink": "|cff0070dd|Hitem:225646::::::::80:::::|h[Blessed Weapon Grip]|h|r"
       }
     ]
+  },
+  "simcRequest": {
+    "requestId": "simc-fluffybear-1739409000000",
+    "requestedAt": 1739409000000,
+    "characterName": "Fluffybear",
+    "realmName": "Blackhand",
+    "profileText": "# Fluffybear-Blackhand\nhead=id=228911,ilevel=639\nmain_hand=id=228921,ilevel=645",
+    "runDroptimizerNow": false
   }
 }

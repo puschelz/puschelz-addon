@@ -5,7 +5,7 @@
 ## IconTexture: Interface\AddOns\Puschelz\Media\puschelz-logo
 ## Author: The Puschelz
 ## Version: 0.13.0
-## OptionalDeps: PuschelzBridge
+## OptionalDeps: PuschelzBridge,Simulationcraft
 ## SavedVariables: PuschelzDB
 
 Puschelz.lua

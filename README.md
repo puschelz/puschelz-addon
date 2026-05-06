@@ -1,4 +1,4 @@
-# Puschelz WoW Addon (V15)
+# Puschelz WoW Addon (V16)
 
 [![CurseForge Addon Name](https://cf.way2muchnoise.eu/title/1492984.svg)](https://curseforge.com/wow/addons/puschelz)
 [![CurseForge Downloads](https://cf.way2muchnoise.eu/1492984.svg)](https://curseforge.com/wow/addons/puschelz)
@@ -9,6 +9,8 @@ Retail WoW addon bundle for guild sync. The release ships as one user-facing ins
 - `PuschelzBridge/` for desktop-written bridge data
 
 Users should treat this as a single addon install/update source. Do not install `PuschelzBridge` separately.
+
+The addon now also exposes a Puschelz minimap button. It opens the manual sync menu for calendar, guild orders, and SimulationCraft export capture.
 
 ## Install
 
@@ -44,14 +46,25 @@ Then configure a GitHub PAT in WoWUp and retry install/update.
 ## Capture flow
 
 1. Open the guild bank and browse tabs (the addon queues all tabs and captures slot data).
-2. Calendar data is scanned manually from the in-game calendar via the `Sync Calendar` button next to Filters; the button shows `Syncing...` while running and briefly switches to `Synced` when finished.
+2. Calendar data is scanned manually from the in-game calendar via the `Sync Calendar` button next to Filters or from the minimap button menu; the button shows `Syncing...` while running and briefly switches to `Synced` when finished.
 3. Open either the crafter or customer crafting-orders UI to passively snapshot currently visible guild orders; the addon prints a chat line when that passive snapshot discovers new order ids.
 4. Use the `Sync Guild Orders` button on either professions/orders window to actively request and capture visible guild orders from both the crafter and `My Orders` views.
-5. Matching open guild orders are printed into chat on login for the current character until they disappear from a later open-order scan.
-6. Required raid addons from the website bridge are checked against active addon folders on login or `/reload`; missing entries print red chat warnings once per changed bridge/missing set.
-7. Raid addon coverage checks auto-refresh on raid roster changes.
-8. Run `/reload` (or log out) to flush SavedVariables to disk.
-9. Inspect `WTF/Account/<ACCOUNT>/SavedVariables/Puschelz.lua`.
+5. The minimap button shows `Sync Guild Orders` only while a supported crafting-orders view is open, because the game API cannot perform the active sync without that UI context.
+6. If the `SimulationCraft` addon is installed, the minimap menu also exposes:
+   - `Sync SimC to backend`
+   - `Run Droptimizer now`
+7. SimC actions capture the current character's `nobags` SimulationCraft export into `SavedVariables` for the desktop client.
+8. The addon cannot push that export to the website directly. Run `/reload` (or log out) so WoW flushes `SavedVariables` to disk, then let the desktop client upload it.
+9. Matching open guild orders are printed into chat on login for the current character until they disappear from a later open-order scan.
+10. Required raid addons from the website bridge are checked against active addon folders on login or `/reload`; missing entries print red chat warnings once per changed bridge/missing set.
+11. Raid addon coverage checks auto-refresh on raid roster changes.
+12. Inspect `WTF/Account/<ACCOUNT>/SavedVariables/Puschelz.lua`.
+
+## SimulationCraft dependency
+
+- SimC export capture depends on the separate `SimulationCraft` addon being installed and enabled.
+- Puschelz reuses the SimulationCraft export API instead of rebuilding the SimC string itself.
+- Without `SimulationCraft`, the minimap SimC actions stay disabled.
 
 ## Slash commands
 
@@ -62,12 +75,13 @@ Then configure a GitHub PAT in WoWUp and retry install/update.
 - `/puschelz syncorders` runs a full guild-order sync request.
 - `/puschelz check` triggers a manual raid addon handshake in the current raid (regular or instance raid/LFR).
 - `/puschelz raidstatus` toggles the raid status window (Installed/Missing/Pending + version per raid member).
+- The minimap button provides the same manual sync entrypoints plus the SimC export actions.
 
 ## SavedVariables shape
 
 ```lua
 PuschelzDB = {
-  schemaVersion = 15,
+  schemaVersion = 16,
   updatedAt = 1739400000000,
   player = {
     characterName = "Fluffybear",
@@ -139,12 +153,20 @@ PuschelzDB = {
       },
     },
   },
+  simcRequest = {
+    requestId = "simc-Fluffybear-Blackhand-1739409000000",
+    requestedAt = 1739409000000,
+    characterName = "Fluffybear",
+    realmName = "Blackhand",
+    profileText = "warrior=\"Fluffybear\"\\nlevel=80\\n...",
+    runDroptimizerNow = true,
+  },
 }
 ```
 
-The `tabs[*].items[*]`, `calendar.events[*]`, optional `calendar.events[*].attendees[*]`, and `guildOrders.orders[*]` fields are intentionally aligned to the website backend payload contract used by `/api/addon-sync`.
+The `tabs[*].items[*]`, `calendar.events[*]`, optional `calendar.events[*].attendees[*]`, `guildOrders.orders[*]`, and `simcRequest` fields are intentionally aligned to the website/backend sync contract used by the desktop client and `/api/addon-sync`.
 
-## Parser fixtures (for V15)
+## Parser fixtures (for V16)
 
 - `fixtures/Puschelz.sample.lua`: sample SavedVariables file.
 - `fixtures/Puschelz.sample.expected.json`: expected parsed object for desktop-client tests.
