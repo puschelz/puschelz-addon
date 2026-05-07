@@ -3669,10 +3669,21 @@ local function seed_raid_random_delay()
   if type(player_guid) == "string" and player_guid ~= "" then
     seed = (seed + stable_hash_number(player_guid)) % 2147483647
   end
-  math.randomseed(seed)
-  math.random()
-  math.random()
-  math.random()
+
+  if type(math.randomseed) == "function" then
+    math.randomseed(seed)
+    math.random()
+    math.random()
+    math.random()
+    return
+  end
+
+  -- Retail seeds the RNG for us; advance it a small player-specific amount
+  -- so the follow-up raid jitter does not stay perfectly aligned.
+  local warmup_rolls = (seed % 5) + 3
+  for _ = 1, warmup_rolls do
+    math.random()
+  end
 end
 
 refresh_minimap_button_position = function()
