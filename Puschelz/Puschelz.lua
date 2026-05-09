@@ -3793,8 +3793,8 @@ local function update_minimap_menu_frame()
 
   local has_simc = has_simulationcraft_exporter()
   local simc_label = has_simc
-    and "Sync SimC to backend"
-    or "Sync SimC to backend (requires SimulationCraft)"
+    and "Sync SimC + Run Droptimizer"
+    or "Sync SimC + Run Droptimizer (requires SimulationCraft)"
 
   buttons.calendar:SetText("Sync Calendar")
   buttons.calendar:Enable()
@@ -3868,7 +3868,7 @@ local function ensure_minimap_menu_frame()
     ),
     simc = create_menu_button(
       "PuschelzMinimapMenuSimcButton",
-      "Sync SimC to backend",
+      "Sync SimC + Run Droptimizer",
       -102,
       function()
         queue_simc_profile_request(true)
