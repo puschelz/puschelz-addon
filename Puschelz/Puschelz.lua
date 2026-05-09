@@ -8,10 +8,8 @@ local GUILD_ORDER_STATE_FULFILLED = 11
 local GUILD_ORDER_STATE_CANCELED = 13
 local GUILD_ORDER_STATE_EXPIRED = 15
 local MINIMAP_BUTTON_DEFAULT_ANGLE = 220
-local MINIMAP_LDB_NAME = "Puschelz"
-local MINIMAP_ICON_PATH = "Interface\\AddOns\\Puschelz\\Media\\puschelz-logo"
-local LDB = LibStub and LibStub("LibDataBroker-1.1", true)
-local MINIMAP_ICON = LibStub and LibStub("LibDBIcon-1.0", true)
+local MINIMAP_BUTTON_RADIUS = 80
+local MINIMAP_ICON_PATH = "Interface\\AddOns\\Puschelz\\Media\\puschelz-logo.png"
 
 local function resolve_addon_version()
   local version
@@ -348,8 +346,11 @@ local calendar_sync_ui = {
 
 local minimap_ui = {
   button = nil,
-  dataObject = nil,
   dropdown = nil,
+  menuFrame = nil,
+  menuButtons = nil,
+  dragging = false,
+  suppressClickUntilMs = 0,
 }
 
 local guild_order_sync = {
@@ -474,9 +475,6 @@ local function ensure_db()
   end
   if type(PuschelzDB.ui.minimapButton.angle) ~= "number" then
     PuschelzDB.ui.minimapButton.angle = MINIMAP_BUTTON_DEFAULT_ANGLE
-  end
-  if type(PuschelzDB.ui.minimapButton.minimapPos) ~= "number" then
-    PuschelzDB.ui.minimapButton.minimapPos = PuschelzDB.ui.minimapButton.angle
   end
 end
 
@@ -2053,23 +2051,62 @@ local function try_load_bridge_addon()
   return try_load_addon_by_name("PuschelzBridge")
 end
 
-local function has_simulationcraft_exporter()
-  if not is_addon_loaded_by_name("Simulationcraft") then
-    try_load_addon_by_name("Simulationcraft")
+local function get_simulationcraft_exporter()
+  local addon_names = {
+    "SimulationCraft",
+    "Simulationcraft",
+  }
+
+  for _, addon_name in ipairs(addon_names) do
+    if not is_addon_loaded_by_name(addon_name) then
+      try_load_addon_by_name(addon_name)
+    end
+  end
+
+  if type(SimulationCraft) == "table" and type(SimulationCraft.GetSimcProfile) == "function" then
+    return SimulationCraft, SimulationCraft.GetSimcProfile
   end
 
   if type(Simulationcraft) == "table" and type(Simulationcraft.GetSimcProfile) == "function" then
-    return true
+    return Simulationcraft, Simulationcraft.GetSimcProfile
   end
 
-  if type(SimulationcraftAPI) == "table"
-    and type(SimulationcraftAPI.GetSimcProfile) == "function"
-    and type(Simulationcraft) == "table"
-  then
-    return true
+  if LibStub then
+    local ace_addon = LibStub("AceAddon-3.0", true)
+    if ace_addon and type(ace_addon.GetAddon) == "function" then
+      local addon_object = ace_addon:GetAddon("Simulationcraft", true)
+      if type(addon_object) == "table" and type(addon_object.GetSimcProfile) == "function" then
+        return addon_object, addon_object.GetSimcProfile
+      end
+    end
   end
 
-  return false
+  if type(SimulationcraftAPI) == "table" and type(SimulationcraftAPI.GetSimcProfile) == "function" then
+    if type(SimulationCraft) == "table" then
+      return SimulationCraft, SimulationcraftAPI.GetSimcProfile
+    end
+
+    if type(Simulationcraft) == "table" then
+      return Simulationcraft, SimulationcraftAPI.GetSimcProfile
+    end
+
+    if LibStub then
+      local ace_addon = LibStub("AceAddon-3.0", true)
+      if ace_addon and type(ace_addon.GetAddon) == "function" then
+        local addon_object = ace_addon:GetAddon("Simulationcraft", true)
+        if type(addon_object) == "table" then
+          return addon_object, SimulationcraftAPI.GetSimcProfile
+        end
+      end
+    end
+  end
+
+  return nil, nil
+end
+
+local function has_simulationcraft_exporter()
+  local exporter, getter = get_simulationcraft_exporter()
+  return exporter ~= nil and getter ~= nil
 end
 
 local function build_simc_request_id()
@@ -2079,19 +2116,20 @@ local function build_simc_request_id()
 end
 
 local function capture_current_simc_profile()
-  if not has_simulationcraft_exporter() then
+  local exporter, getter = get_simulationcraft_exporter()
+  if not exporter or not getter then
     return nil, "SimulationCraft addon is required for SimC sync."
   end
 
   local ok, profile, simc_error
-  if type(Simulationcraft) == "table" and type(Simulationcraft.GetSimcProfile) == "function" then
+  if getter == exporter.GetSimcProfile then
     ok, profile, simc_error = pcall(function()
-      return Simulationcraft:GetSimcProfile(false, true, false, false)
+      return exporter:GetSimcProfile(false, true, false, false)
     end)
   else
     ok, profile, simc_error = pcall(
-      SimulationcraftAPI.GetSimcProfile,
-      Simulationcraft,
+      getter,
+      exporter,
       false,
       true,
       false,
@@ -3688,71 +3726,188 @@ end
 
 refresh_minimap_button_position = function()
   ensure_db()
-  if not MINIMAP_ICON or not MINIMAP_ICON.IsRegistered or not MINIMAP_ICON:IsRegistered(MINIMAP_LDB_NAME) then
+  local button = minimap_ui.button
+  if not button or not Minimap then
     return
   end
 
-  PuschelzDB.ui.minimapButton.angle = tonumber(PuschelzDB.ui.minimapButton.minimapPos) or PuschelzDB.ui.minimapButton.angle
-  MINIMAP_ICON:Refresh(MINIMAP_LDB_NAME, PuschelzDB.ui.minimapButton)
-  minimap_ui.button = MINIMAP_ICON:GetMinimapButton(MINIMAP_LDB_NAME)
+  local angle = tonumber(PuschelzDB.ui.minimapButton.angle) or MINIMAP_BUTTON_DEFAULT_ANGLE
+  local radians = math.rad(angle)
+  button:ClearAllPoints()
+  button:SetPoint(
+    "CENTER",
+    Minimap,
+    "CENTER",
+    math.cos(radians) * MINIMAP_BUTTON_RADIUS,
+    math.sin(radians) * MINIMAP_BUTTON_RADIUS
+  )
 end
 
-local function show_minimap_menu()
-  if not EasyMenu then
+local function update_minimap_button_angle_from_cursor()
+  ensure_db()
+  if not Minimap or not Minimap.GetCenter then
     return
   end
 
-  if not minimap_ui.dropdown then
-    minimap_ui.dropdown = CreateFrame("Frame", "PuschelzMinimapDropdown", UIParent, "UIDropDownMenuTemplate")
+  local cursor_x, cursor_y = GetCursorPosition()
+  local scale = Minimap:GetEffectiveScale() or 1
+  cursor_x = cursor_x / scale
+  cursor_y = cursor_y / scale
+
+  local center_x, center_y = Minimap:GetCenter()
+  local delta_x = cursor_x - center_x
+  local delta_y = cursor_y - center_y
+  local radians
+
+  if delta_x == 0 and delta_y == 0 then
+    radians = math.rad(MINIMAP_BUTTON_DEFAULT_ANGLE)
+  elseif math.atan2 then
+    radians = math.atan2(delta_y, delta_x)
+  elseif delta_x > 0 then
+    radians = math.atan(delta_y / delta_x)
+  elseif delta_x < 0 and delta_y >= 0 then
+    radians = math.atan(delta_y / delta_x) + math.pi
+  elseif delta_x < 0 and delta_y < 0 then
+    radians = math.atan(delta_y / delta_x) - math.pi
+  elseif delta_y > 0 then
+    radians = math.pi / 2
+  else
+    radians = -math.pi / 2
+  end
+
+  local angle = math.deg(radians)
+  if angle < 0 then
+    angle = angle + 360
+  end
+
+  PuschelzDB.ui.minimapButton.angle = angle
+  refresh_minimap_button_position()
+end
+
+local function update_minimap_menu_frame()
+  local frame = minimap_ui.menuFrame
+  local buttons = minimap_ui.menuButtons
+  if not frame or not buttons then
+    return
   end
 
   local has_simc = has_simulationcraft_exporter()
   local simc_label = has_simc
     and "Sync SimC to backend"
     or "Sync SimC to backend (requires SimulationCraft)"
-  local droptimizer_label = has_simc
-    and "Run Droptimizer now"
-    or "Run Droptimizer now (requires SimulationCraft)"
 
-  local menu_items = {
-    { text = "Puschelz", isTitle = true, notCheckable = true },
-    {
-      text = "Sync Calendar",
-      notCheckable = true,
-      func = function()
-        request_calendar_scan(true)
-      end,
-    },
-  }
+  buttons.calendar:SetText("Sync Calendar")
+  buttons.calendar:Enable()
 
+  buttons.orders:SetText("Sync Guild Orders")
   if is_any_guild_order_view_active() then
-    table.insert(menu_items, {
-      text = "Sync Guild Orders",
-      notCheckable = true,
-      func = function()
-        begin_full_guild_order_sync(true)
-      end,
-    })
+    buttons.orders:Enable()
+  else
+    buttons.orders:Disable()
   end
 
-  table.insert(menu_items, {
-    text = simc_label,
-    notCheckable = true,
-    disabled = not has_simc,
-    func = function()
-      queue_simc_profile_request(false)
-    end,
-  })
-  table.insert(menu_items, {
-    text = droptimizer_label,
-    notCheckable = true,
-    disabled = not has_simc,
-    func = function()
-      queue_simc_profile_request(true)
-    end,
-  })
+  buttons.simc:SetText(simc_label)
+  if has_simc then
+    buttons.simc:Enable()
+  else
+    buttons.simc:Disable()
+  end
 
-  EasyMenu(menu_items, minimap_ui.dropdown, "cursor", 0, 0, "MENU", 2)
+  frame:SetHeight(200)
+end
+
+local function ensure_minimap_menu_frame()
+  if minimap_ui.menuFrame then
+    update_minimap_menu_frame()
+    return minimap_ui.menuFrame
+  end
+
+  local frame = CreateFrame("Frame", "PuschelzMinimapMenuFrame", UIParent, "BasicFrameTemplateWithInset")
+  frame:SetSize(260, 200)
+  frame:SetFrameStrata("DIALOG")
+  frame:SetClampedToScreen(true)
+  frame:SetMovable(true)
+  frame:EnableMouse(true)
+  frame:RegisterForDrag("LeftButton")
+  frame:SetScript("OnDragStart", frame.StartMoving)
+  frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
+  frame:Hide()
+
+  frame.title = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+  frame.title:SetPoint("TOP", frame, "TOP", 0, -10)
+  frame.title:SetText("Puschelz")
+
+  local function create_menu_button(name, label, offset_y, on_click)
+    local button = CreateFrame("Button", name, frame, "UIPanelButtonTemplate")
+    button:SetSize(200, 24)
+    button:SetPoint("TOP", frame, "TOP", 0, offset_y)
+    button:SetText(label)
+    button:SetScript("OnClick", function()
+      frame:Hide()
+      on_click()
+    end)
+    return button
+  end
+
+  local buttons = {
+    calendar = create_menu_button(
+      "PuschelzMinimapMenuCalendarButton",
+      "Sync Calendar",
+      -38,
+      function()
+        request_calendar_scan(true)
+      end
+    ),
+    orders = create_menu_button(
+      "PuschelzMinimapMenuOrdersButton",
+      "Sync Guild Orders",
+      -70,
+      function()
+        begin_full_guild_order_sync(true)
+      end
+    ),
+    simc = create_menu_button(
+      "PuschelzMinimapMenuSimcButton",
+      "Sync SimC to backend",
+      -102,
+      function()
+        queue_simc_profile_request(true)
+      end
+    ),
+    close = create_menu_button(
+      "PuschelzMinimapMenuCloseButton",
+      "Close",
+      -144,
+      function()
+      end
+    ),
+  }
+
+  minimap_ui.menuFrame = frame
+  minimap_ui.menuButtons = buttons
+  update_minimap_menu_frame()
+  return frame
+end
+
+local function show_minimap_menu()
+  local frame = ensure_minimap_menu_frame()
+  if not frame then
+    return
+  end
+
+  if frame:IsShown() then
+    frame:Hide()
+    return
+  end
+
+  frame:ClearAllPoints()
+  if minimap_ui.button and minimap_ui.button:IsShown() then
+    frame:SetPoint("TOPRIGHT", minimap_ui.button, "BOTTOMLEFT", -8, -8)
+  else
+    frame:SetPoint("CENTER", UIParent, "CENTER")
+  end
+  frame:Show()
+  frame:Raise()
 end
 
 local function show_addon_compartment_tooltip(button)
@@ -3761,7 +3916,6 @@ local function show_addon_compartment_tooltip(button)
   end
 
   GameTooltip:SetOwner(button, "ANCHOR_LEFT")
-  GameTooltip:ClearLines()
   GameTooltip:AddLine("Puschelz", 1, 0.82, 0, true)
   GameTooltip:AddLine(" ")
   GameTooltip:AddLine("Open the sync menu for calendar, guild orders, and SimC export actions.", 1, 1, 1, true)
@@ -3790,50 +3944,56 @@ function PuschelzAddonCompartment_OnLeave()
 end
 
 ensure_minimap_button = function()
-  if not LDB or not MINIMAP_ICON then
-    return nil
-  end
-
-  ensure_db()
-
-  if minimap_ui.button and MINIMAP_ICON.IsRegistered and MINIMAP_ICON:IsRegistered(MINIMAP_LDB_NAME) then
+  if minimap_ui.button or not Minimap then
     refresh_minimap_button_position()
     return minimap_ui.button
   end
 
-  if not minimap_ui.dataObject then
-    minimap_ui.dataObject = LDB:NewDataObject(MINIMAP_LDB_NAME, {
-      type = "launcher",
-      text = "Puschelz",
-      icon = MINIMAP_ICON_PATH,
-      OnClick = function(_, button_name)
-        if type(button_name) ~= "string" or button_name == "" then
-          button_name = "LeftButton"
-        end
-        show_minimap_menu()
-      end,
-      OnTooltipShow = function(tooltip)
-        if not tooltip or type(tooltip.AddLine) ~= "function" then
-          return
-        end
-        tooltip:ClearLines()
-        tooltip:AddLine("Puschelz")
-        tooltip:AddLine(" ")
-        tooltip:AddLine("Open the sync menu for calendar, guild orders, and SimC export actions.", 1, 1, 1, true)
-        tooltip:AddLine(" ")
-        tooltip:AddLine("Click to open the sync menu.", 0.8, 0.8, 0.8)
-        tooltip:AddLine("Drag to move the minimap button.", 0.8, 0.8, 0.8)
-      end,
-    })
-  end
+  ensure_db()
 
-  if not MINIMAP_ICON:IsRegistered(MINIMAP_LDB_NAME) then
-    MINIMAP_ICON:Register(MINIMAP_LDB_NAME, minimap_ui.dataObject, PuschelzDB.ui.minimapButton)
-  end
+  local button = CreateFrame("Button", "PuschelzMinimapButton", Minimap)
+  button:SetSize(32, 32)
+  button:SetFrameStrata("MEDIUM")
+  button:SetFrameLevel((Minimap:GetFrameLevel() or 1) + 8)
+  button:SetMovable(true)
+  button:EnableMouse(true)
+  button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+  button:RegisterForDrag("LeftButton")
+  button:SetClampedToScreen(true)
 
+  local icon = button:CreateTexture(nil, "ARTWORK")
+  icon:SetTexture(MINIMAP_ICON_PATH)
+  icon:SetSize(20, 20)
+  icon:SetPoint("CENTER", button, "CENTER", 0, 0)
+  icon:SetTexCoord(0.05, 0.95, 0.05, 0.95)
+
+  local border = button:CreateTexture(nil, "OVERLAY")
+  border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+  border:SetSize(54, 54)
+  border:SetPoint("CENTER", button, "CENTER", 0, 0)
+
+  button:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+  button:SetScript("OnDragStart", function(self)
+    minimap_ui.dragging = true
+    self:SetScript("OnUpdate", update_minimap_button_angle_from_cursor)
+  end)
+  button:SetScript("OnDragStop", function(self)
+    minimap_ui.dragging = false
+    minimap_ui.suppressClickUntilMs = now_runtime_ms() + 250
+    self:SetScript("OnUpdate", nil)
+    update_minimap_button_angle_from_cursor()
+  end)
+  button:SetScript("OnClick", function()
+    if minimap_ui.dragging or now_runtime_ms() < (minimap_ui.suppressClickUntilMs or 0) then
+      return
+    end
+    show_minimap_menu()
+  end)
+
+  minimap_ui.button = button
   refresh_minimap_button_position()
-  minimap_ui.button = MINIMAP_ICON:GetMinimapButton(MINIMAP_LDB_NAME)
-  return minimap_ui.button
+  button:Show()
+  return button
 end
 
 local function print_status()
@@ -4048,7 +4208,6 @@ frame:SetScript("OnEvent", function(_, event, ...)
 
   if event == "PLAYER_LOGOUT" then
     ensure_db()
-    PuschelzDB.ui.minimapButton.angle = tonumber(PuschelzDB.ui.minimapButton.minimapPos) or PuschelzDB.ui.minimapButton.angle
     PuschelzDB.updatedAt = now_epoch_ms()
   end
 end)

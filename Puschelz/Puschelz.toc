@@ -2,7 +2,7 @@
 ## Title: Puschelz
 ## Notes: Guild Addon - Captures guild bank, calendar, and guild orders into SavedVariables for external sync.
 ## Notes-deDE: Gilden Addon - Erfasst Gildenbank-, Kalender- und Gildenauftragsdaten in SavedVariables fuer die externe Synchronisierung.
-## IconTexture: Interface\AddOns\Puschelz\Media\puschelz-logo
+## IconTexture: Interface\AddOns\Puschelz\Media\puschelz-logo.png
 ## AddonCompartmentFunc: PuschelzAddonCompartment_Click
 ## AddonCompartmentFuncOnEnter: PuschelzAddonCompartment_OnEnter
 ## AddonCompartmentFuncOnLeave: PuschelzAddonCompartment_OnLeave
@@ -11,8 +11,4 @@
 ## OptionalDeps: PuschelzBridge,Simulationcraft
 ## SavedVariables: PuschelzDB
 
-Libs\LibStub\LibStub.lua
-Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
-Libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
-Libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
 Puschelz.lua
