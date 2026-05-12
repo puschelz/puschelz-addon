@@ -474,7 +474,8 @@ local function ensure_db()
     PuschelzDB.ui.minimapButton = {}
   end
   if type(PuschelzDB.ui.minimapButton.angle) ~= "number" then
-    PuschelzDB.ui.minimapButton.angle = MINIMAP_BUTTON_DEFAULT_ANGLE
+    PuschelzDB.ui.minimapButton.angle =
+      tonumber(PuschelzDB.ui.minimapButton.minimapPos) or MINIMAP_BUTTON_DEFAULT_ANGLE
   end
 end
 
@@ -3952,7 +3953,7 @@ ensure_minimap_button = function()
   ensure_db()
 
   local button = CreateFrame("Button", "PuschelzMinimapButton", Minimap)
-  button:SetSize(32, 32)
+  button:SetSize(31, 31)
   button:SetFrameStrata("MEDIUM")
   button:SetFrameLevel((Minimap:GetFrameLevel() or 1) + 8)
   button:SetMovable(true)
@@ -3961,16 +3962,21 @@ ensure_minimap_button = function()
   button:RegisterForDrag("LeftButton")
   button:SetClampedToScreen(true)
 
-  local icon = button:CreateTexture(nil, "ARTWORK")
-  icon:SetTexture(MINIMAP_ICON_PATH)
-  icon:SetSize(20, 20)
-  icon:SetPoint("CENTER", button, "CENTER", 0, 0)
-  icon:SetTexCoord(0.05, 0.95, 0.05, 0.95)
-
   local border = button:CreateTexture(nil, "OVERLAY")
   border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
   border:SetSize(54, 54)
-  border:SetPoint("CENTER", button, "CENTER", 0, 0)
+  border:SetPoint("TOPLEFT")
+
+  local background = button:CreateTexture(nil, "BACKGROUND")
+  background:SetSize(20, 20)
+  background:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
+  background:SetPoint("TOPLEFT", 7, -5)
+
+  local icon = button:CreateTexture(nil, "ARTWORK")
+  icon:SetTexture(MINIMAP_ICON_PATH)
+  icon:SetSize(17, 17)
+  icon:SetPoint("TOPLEFT", 7, -6)
+  icon:SetTexCoord(0.05, 0.95, 0.05, 0.95)
 
   button:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
   button:SetScript("OnDragStart", function(self)
