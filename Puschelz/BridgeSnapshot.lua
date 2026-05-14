@@ -87,11 +87,9 @@ function PuschelzBridgeSnapshot.ensure_loaded()
     state.bridgeLoadAttempted = true
     state.bridgeLoaded = loaded and true or false
     state.bridgeLoadReason = tostring(reason or "unknown")
-    state.bridgeDebugSynced = false
   elseif not state.bridgeLoaded and deps.is_addon_loaded_by_name("PuschelzBridge") then
     state.bridgeLoaded = true
     state.bridgeLoadReason = "already_loaded"
-    state.bridgeDebugSynced = false
   end
 
   return normalize_root()
