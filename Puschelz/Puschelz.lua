@@ -1,6 +1,6 @@
 local ADDON_NAME = ...
 
-local SCHEMA_VERSION = 16
+local SCHEMA_VERSION = 17
 local GUILD_BANK_SLOTS_PER_TAB = 98
 local CALENDAR_MONTH_OFFSETS = { -1, 0, 1, 2 }
 local GUILD_ORDER_TYPE_GUILD = 1
@@ -61,6 +61,23 @@ local raid_status = {
   window = nil,
   rows = {},
 }
+
+local sync_queue = {
+  prefix = "PUSCHELZSYNC",
+  ttlMs = 24 * 60 * 60 * 1000,
+  scopeOrder = { "calendar", "guildOrders", "simc" },
+  scopeLabels = {
+    calendar = "calendar",
+    guildOrders = "orders",
+    simc = "simc",
+  },
+  prefixRegistered = false,
+}
+
+local normalize_player_name
+local local_player_identity
+local refresh_sync_state_visuals
+local refresh_minimap_pending_state
 
 local function now_epoch_ms()
   return math.floor(GetServerTime() * 1000)
@@ -351,6 +368,7 @@ local minimap_ui = {
   dataObject = nil,
   menuFrame = nil,
   menuButtons = nil,
+  pendingDot = nil,
 }
 
 local guild_order_sync = {
@@ -467,6 +485,16 @@ local function ensure_db()
     PuschelzDB.requiredAddonCompliance = {}
   end
 
+  if type(PuschelzDB.pendingReload) ~= "table" then
+    PuschelzDB.pendingReload = {}
+  end
+  if type(PuschelzDB.lastSyncedPayload) ~= "table" then
+    PuschelzDB.lastSyncedPayload = {}
+  end
+  if type(PuschelzDB.guildSyncQueue) ~= "table" then
+    PuschelzDB.guildSyncQueue = {}
+  end
+
   if type(PuschelzDB.ui) ~= "table" then
     PuschelzDB.ui = {}
   end
@@ -480,6 +508,597 @@ local function ensure_db()
   if type(PuschelzDB.ui.minimapButton.angle) ~= "number" then
     PuschelzDB.ui.minimapButton.angle =
       tonumber(PuschelzDB.ui.minimapButton.minimapPos) or MINIMAP_BUTTON_DEFAULT_ANGLE
+  end
+end
+
+function sync_queue.normalize_scope_list(raw_scopes)
+  local seen = {}
+  local normalized = {}
+
+  local function add_scope(scope)
+    if type(scope) ~= "string" then
+      return
+    end
+    for _, candidate in ipairs(sync_queue.scopeOrder) do
+      if candidate == scope and not seen[candidate] then
+        seen[candidate] = true
+        table.insert(normalized, candidate)
+        return
+      end
+    end
+  end
+
+  if type(raw_scopes) == "string" then
+    add_scope(raw_scopes)
+  elseif type(raw_scopes) == "table" then
+    for _, scope in ipairs(raw_scopes) do
+      add_scope(scope)
+    end
+  end
+
+  return normalized
+end
+
+function sync_queue.merge_scope_lists(existing_scopes, additional_scopes)
+  local merged = {}
+  local seen = {}
+
+  for _, scope in ipairs(sync_queue.normalize_scope_list(existing_scopes)) do
+    if not seen[scope] then
+      seen[scope] = true
+      table.insert(merged, scope)
+    end
+  end
+
+  for _, scope in ipairs(sync_queue.normalize_scope_list(additional_scopes)) do
+    if not seen[scope] then
+      seen[scope] = true
+      table.insert(merged, scope)
+    end
+  end
+
+  return merged
+end
+
+function sync_queue.scope_list_to_csv(scopes)
+  return table.concat(sync_queue.normalize_scope_list(scopes), ",")
+end
+
+function sync_queue.scope_csv_to_list(text)
+  local scopes = {}
+  if type(text) ~= "string" or text == "" then
+    return scopes
+  end
+
+  for token in string.gmatch(text, "([^,]+)") do
+    table.insert(scopes, token)
+  end
+
+  return sync_queue.normalize_scope_list(scopes)
+end
+
+function sync_queue.format_scope_labels(scopes)
+  local labels = {}
+  for _, scope in ipairs(sync_queue.normalize_scope_list(scopes)) do
+    table.insert(labels, sync_queue.scopeLabels[scope] or scope)
+  end
+
+  if #labels == 0 then
+    return "none"
+  end
+
+  return table.concat(labels, ", ")
+end
+
+function sync_queue.sanitize_field(value)
+  local text = tostring(value or "")
+  text = string.gsub(text, "|", "/")
+  text = string.gsub(text, "[\r\n]", " ")
+  return text
+end
+
+function sync_queue.current_subject_key()
+  local subject_key, subject_name = local_player_identity()
+  return subject_key, subject_name
+end
+
+function sync_queue.normalize_subject_key(value)
+  local subject_key, subject_name = normalize_player_name(value)
+  if not subject_key then
+    return nil, nil
+  end
+  return subject_key, subject_name
+end
+
+function sync_queue.queue_item_is_expired(item, now_ms)
+  if type(item) ~= "table" then
+    return true
+  end
+
+  local payload_version = tonumber(item.payloadVersion) or 0
+  if payload_version <= 0 then
+    return true
+  end
+
+  local last_broadcast_at = tonumber(item.lastBroadcastAt) or 0
+  local updated_at = tonumber(item.updatedAt) or 0
+  local freshness_at = math.max(last_broadcast_at, updated_at)
+  if freshness_at <= 0 then
+    return true
+  end
+
+  return freshness_at + sync_queue.ttlMs <= (tonumber(now_ms) or now_epoch_ms())
+end
+
+function sync_queue.prune_guild_queue()
+  ensure_db()
+  local now_ms = now_epoch_ms()
+  local local_subject_key = select(1, sync_queue.current_subject_key())
+
+  for subject_key, item in pairs(PuschelzDB.guildSyncQueue) do
+    local normalized_key = sync_queue.normalize_subject_key(subject_key)
+    local remove_item = normalized_key == nil
+      or sync_queue.queue_item_is_expired(item, now_ms)
+      or (local_subject_key ~= nil and normalized_key == local_subject_key)
+
+    if remove_item then
+      PuschelzDB.guildSyncQueue[subject_key] = nil
+    elseif normalized_key ~= subject_key then
+      PuschelzDB.guildSyncQueue[subject_key] = nil
+      item.subjectKey = normalized_key
+      item.changedScopes = sync_queue.normalize_scope_list(item.changedScopes)
+      PuschelzDB.guildSyncQueue[normalized_key] = item
+    else
+      item.changedScopes = sync_queue.normalize_scope_list(item.changedScopes)
+      item.payloadVersion = tonumber(item.payloadVersion) or 0
+      item.createdAt = tonumber(item.createdAt) or now_ms
+      item.updatedAt = tonumber(item.updatedAt) or item.createdAt
+      item.lastBroadcastAt = tonumber(item.lastBroadcastAt) or item.updatedAt
+    end
+  end
+end
+
+function sync_queue.sorted_guild_queue_items()
+  sync_queue.prune_guild_queue()
+
+  local items = {}
+  for _, item in pairs(PuschelzDB.guildSyncQueue) do
+    if type(item) == "table" and (tonumber(item.payloadVersion) or 0) > 0 then
+      table.insert(items, item)
+    end
+  end
+
+  table.sort(items, function(a, b)
+    local a_broadcast = tonumber(a.lastBroadcastAt) or 0
+    local b_broadcast = tonumber(b.lastBroadcastAt) or 0
+    if a_broadcast == b_broadcast then
+      return tostring(a.subjectName or a.subjectKey or "") < tostring(b.subjectName or b.subjectKey or "")
+    end
+    return a_broadcast > b_broadcast
+  end)
+
+  return items
+end
+
+function sync_queue.current_local_pending_reload()
+  ensure_db()
+  local pending = PuschelzDB.pendingReload
+  if type(pending) ~= "table" then
+    return nil
+  end
+
+  if (tonumber(pending.payloadVersion) or 0) <= 0 then
+    return nil
+  end
+
+  local subject_key = sync_queue.normalize_subject_key(pending.subjectKey)
+  if not subject_key then
+    return nil
+  end
+
+  pending.subjectKey = subject_key
+  pending.changedScopes = sync_queue.normalize_scope_list(pending.changedScopes)
+  return pending
+end
+
+function sync_queue.build_calendar_signature()
+  ensure_db()
+  local parts = {}
+
+  for _, event in ipairs(PuschelzDB.calendar.events or {}) do
+    table.insert(parts, tostring(event.wowEventId or ""))
+    table.insert(parts, tostring(event.title or ""))
+    table.insert(parts, tostring(event.eventType or ""))
+    table.insert(parts, tostring(event.startTime or ""))
+    table.insert(parts, tostring(event.endTime or ""))
+
+    for _, attendee in ipairs(event.attendees or {}) do
+      table.insert(parts, tostring(attendee.name or ""))
+      table.insert(parts, tostring(attendee.status or ""))
+    end
+
+    table.insert(parts, ";")
+  end
+
+  return tostring(stable_hash_number(table.concat(parts, "|")))
+end
+
+function sync_queue.build_guild_orders_signature()
+  ensure_db()
+  local parts = {}
+
+  for _, order in ipairs(PuschelzDB.guildOrders.orders or {}) do
+    table.insert(parts, tostring(order.orderId or ""))
+    table.insert(parts, tostring(order.itemId or ""))
+    table.insert(parts, tostring(order.spellId or ""))
+    table.insert(parts, tostring(order.orderState or ""))
+    table.insert(parts, tostring(order.expirationTime or ""))
+    table.insert(parts, tostring(order.claimEndTime or ""))
+    table.insert(parts, tostring(order.minQuality or ""))
+    table.insert(parts, tostring(order.tipAmount or ""))
+    table.insert(parts, tostring(order.consortiumCut or ""))
+    table.insert(parts, order.isRecraft == true and "1" or "0")
+    table.insert(parts, order.isFulfillable == true and "1" or "0")
+    table.insert(parts, tostring(order.reagentState or ""))
+    table.insert(parts, tostring(order.customerGuid or ""))
+    table.insert(parts, tostring(order.customerName or ""))
+    table.insert(parts, tostring(order.crafterGuid or ""))
+    table.insert(parts, tostring(order.crafterName or ""))
+    table.insert(parts, tostring(order.customerNotes or ""))
+    table.insert(parts, tostring(order.outputItemHyperlink or ""))
+    table.insert(parts, tostring(order.recraftItemHyperlink or ""))
+    table.insert(parts, ";")
+  end
+
+  return tostring(stable_hash_number(table.concat(parts, "|")))
+end
+
+function sync_queue.build_simc_signature()
+  ensure_db()
+  local request = type(PuschelzDB.simcRequest) == "table" and PuschelzDB.simcRequest or nil
+  if not request then
+    return "0"
+  end
+
+  local parts = {
+    tostring(request.characterName or ""),
+    tostring(request.realmName or ""),
+    request.runDroptimizerNow == true and "1" or "0",
+    tostring(request.profileText or ""),
+  }
+
+  return tostring(stable_hash_number(table.concat(parts, "|")))
+end
+
+function sync_queue.current_scope_signatures()
+  return {
+    calendar = sync_queue.build_calendar_signature(),
+    guildOrders = sync_queue.build_guild_orders_signature(),
+    simc = sync_queue.build_simc_signature(),
+  }
+end
+
+function sync_queue.current_payload_fingerprint()
+  local signatures = sync_queue.current_scope_signatures()
+  return table.concat({
+    "calendar:" .. tostring(signatures.calendar or "0"),
+    "guildOrders:" .. tostring(signatures.guildOrders or "0"),
+    "simc:" .. tostring(signatures.simc or "0"),
+  }, "|"), signatures
+end
+
+function sync_queue.clear_local_pending_reload(subject_key, payload_version, acknowledged_at)
+  ensure_db()
+  local pending = sync_queue.current_local_pending_reload()
+  if not pending then
+    return false
+  end
+
+  local normalized_subject_key = sync_queue.normalize_subject_key(subject_key)
+  if not normalized_subject_key or normalized_subject_key ~= pending.subjectKey then
+    return false
+  end
+
+  local acknowledged_version = tonumber(payload_version) or 0
+  local pending_version = tonumber(pending.payloadVersion) or 0
+  if acknowledged_version < pending_version then
+    return false
+  end
+
+  PuschelzDB.lastSyncedPayload = {
+    subjectKey = pending.subjectKey,
+    subjectName = pending.subjectName,
+    payloadVersion = pending_version,
+    payloadFingerprint = pending.payloadFingerprint,
+    scopeSignatures = pending.scopeSignatures,
+    acknowledgedAt = tonumber(acknowledged_at) or now_epoch_ms(),
+  }
+  PuschelzDB.pendingReload = {}
+  PuschelzDB.updatedAt = now_epoch_ms()
+  return true
+end
+
+function sync_queue.clear_guild_queue_subject(subject_key, payload_version)
+  ensure_db()
+  local normalized_subject_key = sync_queue.normalize_subject_key(subject_key)
+  if not normalized_subject_key then
+    return false
+  end
+
+  local item = PuschelzDB.guildSyncQueue[normalized_subject_key]
+  if type(item) ~= "table" then
+    return false
+  end
+
+  if (tonumber(payload_version) or 0) < (tonumber(item.payloadVersion) or 0) then
+    return false
+  end
+
+  PuschelzDB.guildSyncQueue[normalized_subject_key] = nil
+  PuschelzDB.updatedAt = now_epoch_ms()
+  return true
+end
+
+function sync_queue.apply_bridge_acknowledgment(raw_entry)
+  if type(raw_entry) ~= "table" then
+    return false
+  end
+
+  local subject_key = sync_queue.normalize_subject_key(raw_entry.subjectKey or raw_entry.subjectName)
+  local payload_version = tonumber(raw_entry.payloadVersion) or 0
+  if not subject_key or payload_version <= 0 then
+    return false
+  end
+
+  local acknowledged_at = tonumber(raw_entry.acknowledgedAt) or tonumber(raw_entry.updatedAt) or now_epoch_ms()
+  local changed = false
+  if sync_queue.clear_local_pending_reload(subject_key, payload_version, acknowledged_at) then
+    changed = true
+  end
+  if sync_queue.clear_guild_queue_subject(subject_key, payload_version) then
+    changed = true
+  end
+
+  return changed
+end
+
+function sync_queue.consume_bridge_acknowledgments()
+  if type(PuschelzBridgeDB) ~= "table" or type(PuschelzBridgeDB.syncAcknowledgments) ~= "table" then
+    return
+  end
+
+  local changed = false
+  for _, entry in pairs(PuschelzBridgeDB.syncAcknowledgments) do
+    if sync_queue.apply_bridge_acknowledgment(entry) then
+      changed = true
+    end
+  end
+
+  if changed and refresh_sync_state_visuals then
+    refresh_sync_state_visuals()
+  end
+end
+
+function sync_queue.parse_message(message)
+  if type(message) ~= "string" then
+    return nil
+  end
+
+  local fields = {}
+  local field_start = 1
+  while true do
+    local separator_start, separator_end = string.find(message, "|", field_start, true)
+    if not separator_start then
+      table.insert(fields, string.sub(message, field_start))
+      break
+    end
+
+    table.insert(fields, string.sub(message, field_start, separator_start - 1))
+    field_start = separator_end + 1
+  end
+
+  if fields[1] ~= "PENDING" or #fields < 7 then
+    return nil
+  end
+
+  local subject_key, _ = sync_queue.normalize_subject_key(fields[2])
+  local payload_version = tonumber(fields[4]) or 0
+  if not subject_key or payload_version <= 0 then
+    return nil
+  end
+
+  return {
+    subjectKey = subject_key,
+    subjectName = fields[3],
+    payloadVersion = payload_version,
+    createdAt = tonumber(fields[5]) or 0,
+    updatedAt = tonumber(fields[6]) or 0,
+    changedScopes = sync_queue.scope_csv_to_list(fields[7]),
+  }
+end
+
+function sync_queue.register_prefix()
+  if sync_queue.prefixRegistered then
+    return true
+  end
+  if not C_ChatInfo or not C_ChatInfo.RegisterAddonMessagePrefix then
+    return false
+  end
+
+  sync_queue.prefixRegistered = C_ChatInfo.RegisterAddonMessagePrefix(sync_queue.prefix) and true or false
+  return sync_queue.prefixRegistered
+end
+
+function sync_queue.broadcast_local_pending_reload()
+  local pending = sync_queue.current_local_pending_reload()
+  if not pending or not C_ChatInfo or not C_ChatInfo.SendAddonMessage then
+    return false
+  end
+  if not sync_queue.register_prefix() then
+    return false
+  end
+  if not IsInGuild or not IsInGuild() then
+    return false
+  end
+
+  pending.lastBroadcastAt = now_epoch_ms()
+  local payload = table.concat({
+    "PENDING",
+    sync_queue.sanitize_field(pending.subjectKey),
+    sync_queue.sanitize_field(pending.subjectName),
+    tostring(tonumber(pending.payloadVersion) or 0),
+    tostring(tonumber(pending.createdAt) or 0),
+    tostring(tonumber(pending.updatedAt) or 0),
+    sync_queue.scope_list_to_csv(pending.changedScopes),
+  }, "|")
+
+  C_ChatInfo.SendAddonMessage(sync_queue.prefix, payload, "GUILD")
+  PuschelzDB.updatedAt = now_epoch_ms()
+  return true
+end
+
+function sync_queue.mark_local_pending_reload(changed_scopes, should_broadcast)
+  ensure_db()
+  local subject_key, subject_name = sync_queue.current_subject_key()
+  if not subject_key or not subject_name then
+    return nil
+  end
+
+  local fingerprint, scope_signatures = sync_queue.current_payload_fingerprint()
+  local baseline = type(PuschelzDB.lastSyncedPayload) == "table" and PuschelzDB.lastSyncedPayload or {}
+  local pending = sync_queue.current_local_pending_reload()
+  local now_ms = now_epoch_ms()
+
+  if pending and pending.subjectKey ~= subject_key then
+    pending = nil
+    PuschelzDB.pendingReload = {}
+  end
+
+  local current_version = pending and (tonumber(pending.payloadVersion) or 0) or (tonumber(baseline.payloadVersion) or 0)
+  local current_fingerprint = pending and pending.payloadFingerprint or baseline.payloadFingerprint
+  local reference_scope_signatures = type(pending and pending.scopeSignatures) == "table"
+    and pending.scopeSignatures
+    or (type(baseline.scopeSignatures) == "table" and baseline.scopeSignatures or {})
+
+  if current_fingerprint == fingerprint and not pending then
+    if refresh_sync_state_visuals then
+      refresh_sync_state_visuals()
+    end
+    return nil
+  end
+
+  if type(pending) ~= "table" then
+    pending = {}
+  end
+
+  local effective_scopes = {}
+  for _, scope in ipairs(sync_queue.normalize_scope_list(changed_scopes)) do
+    if scope_signatures[scope] ~= reference_scope_signatures[scope] then
+      table.insert(effective_scopes, scope)
+    end
+  end
+
+  local merged_scopes = sync_queue.merge_scope_lists(pending.changedScopes, effective_scopes)
+  local payload_changed = current_fingerprint ~= fingerprint
+  if payload_changed then
+    current_version = current_version + 1
+  end
+
+  if current_version <= 0 then
+    current_version = 1
+  end
+
+  pending.subjectKey = subject_key
+  pending.subjectName = subject_name
+  pending.payloadVersion = current_version
+  pending.payloadFingerprint = fingerprint
+  pending.scopeSignatures = scope_signatures
+  pending.changedScopes = merged_scopes
+  pending.createdAt = tonumber(pending.createdAt) or now_ms
+  if payload_changed then
+    pending.updatedAt = now_ms
+  else
+    pending.updatedAt = tonumber(pending.updatedAt) or now_ms
+  end
+
+  PuschelzDB.pendingReload = pending
+  PuschelzDB.updatedAt = now_ms
+
+  if should_broadcast then
+    sync_queue.broadcast_local_pending_reload()
+  end
+
+  if refresh_sync_state_visuals then
+    refresh_sync_state_visuals()
+  end
+
+  return pending
+end
+
+function sync_queue.handle_addon_message(prefix, message, channel, sender)
+  if prefix ~= sync_queue.prefix or channel ~= "GUILD" then
+    return
+  end
+
+  local sender_key = select(1, sync_queue.normalize_subject_key(sender))
+  local local_subject_key = select(1, sync_queue.current_subject_key())
+  if sender_key and local_subject_key and sender_key == local_subject_key then
+    return
+  end
+
+  local parsed = sync_queue.parse_message(message)
+  if not parsed then
+    return
+  end
+
+  if local_subject_key and parsed.subjectKey == local_subject_key then
+    return
+  end
+
+  ensure_db()
+  sync_queue.prune_guild_queue()
+
+  local now_ms = now_epoch_ms()
+  local existing = PuschelzDB.guildSyncQueue[parsed.subjectKey]
+  if type(existing) ~= "table" then
+    PuschelzDB.guildSyncQueue[parsed.subjectKey] = {
+      subjectKey = parsed.subjectKey,
+      subjectName = parsed.subjectName,
+      payloadVersion = parsed.payloadVersion,
+      changedScopes = parsed.changedScopes,
+      createdAt = parsed.createdAt > 0 and parsed.createdAt or now_ms,
+      updatedAt = parsed.updatedAt > 0 and parsed.updatedAt or now_ms,
+      lastBroadcastAt = now_ms,
+    }
+    PuschelzDB.updatedAt = now_ms
+    if refresh_sync_state_visuals then
+      refresh_sync_state_visuals()
+    end
+    return
+  end
+
+  local existing_version = tonumber(existing.payloadVersion) or 0
+  if parsed.payloadVersion < existing_version then
+    return
+  end
+
+  existing.subjectName = parsed.subjectName ~= "" and parsed.subjectName or existing.subjectName
+  existing.lastBroadcastAt = now_ms
+
+  if parsed.payloadVersion == existing_version then
+    existing.changedScopes = sync_queue.merge_scope_lists(existing.changedScopes, parsed.changedScopes)
+    existing.createdAt = tonumber(existing.createdAt) or (parsed.createdAt > 0 and parsed.createdAt or now_ms)
+    existing.updatedAt = math.max(tonumber(existing.updatedAt) or 0, parsed.updatedAt)
+  else
+    existing.payloadVersion = parsed.payloadVersion
+    existing.changedScopes = parsed.changedScopes
+    existing.createdAt = parsed.createdAt > 0 and parsed.createdAt or now_ms
+    existing.updatedAt = parsed.updatedAt > 0 and parsed.updatedAt or now_ms
+  end
+
+  PuschelzDB.updatedAt = now_ms
+  if refresh_sync_state_visuals then
+    refresh_sync_state_visuals()
   end
 end
 
@@ -694,6 +1313,7 @@ local function finalize_calendar_capture(events)
   PuschelzDB.calendar.events = events or {}
   PuschelzDB.calendar.lastScannedAt = now_epoch_ms()
   PuschelzDB.updatedAt = PuschelzDB.calendar.lastScannedAt
+  sync_queue.mark_local_pending_reload({ "calendar" }, true)
 end
 
 local function set_calendar_sync_button_state(state)
@@ -1283,11 +1903,12 @@ local function normalize_guild_order(raw_order)
   }
 end
 
-local function finalize_guild_orders_capture(orders)
+local function finalize_guild_orders_capture(orders, should_broadcast)
   ensure_db()
   PuschelzDB.guildOrders.orders = orders or {}
   PuschelzDB.guildOrders.lastScannedAt = now_epoch_ms()
   PuschelzDB.updatedAt = PuschelzDB.guildOrders.lastScannedAt
+  sync_queue.mark_local_pending_reload({ "guildOrders" }, should_broadcast == true)
 end
 
 local function collect_guild_orders_into_map(raw_orders, by_order_id)
@@ -1364,7 +1985,7 @@ local function capture_visible_guild_orders(notify_on_completion)
   end
 
   local new_order_count = count_new_guild_orders(PuschelzDB.guildOrders.orders, orders)
-  finalize_guild_orders_capture(orders)
+  finalize_guild_orders_capture(orders, false)
   if notify_on_completion then
     print(string.format("Puschelz: captured %d visible guild order(s).", #orders))
   elseif new_order_count > 0 then
@@ -1623,7 +2244,7 @@ end
 local function finalize_full_guild_order_sync(notify_on_completion)
   local orders = sorted_guild_orders_from_map(guild_order_sync.collectedByOrderId)
   reset_full_guild_order_sync_state()
-  finalize_guild_orders_capture(orders)
+  finalize_guild_orders_capture(orders, true)
 
   if notify_on_completion then
     print(string.format("Puschelz: full guild order sync complete (%d order(s)).", #orders))
@@ -1934,7 +2555,7 @@ local function normalized_realm_name()
   return nil
 end
 
-local function normalize_player_name(raw_name)
+normalize_player_name = function(raw_name)
   if type(raw_name) ~= "string" then
     return nil, nil
   end
@@ -1960,7 +2581,7 @@ local function normalize_player_name(raw_name)
   return string.lower(trimmed), trimmed
 end
 
-local function local_player_identity()
+local_player_identity = function()
   local character_name, realm_name = UnitFullName("player")
   if type(character_name) ~= "string" or character_name == "" then
     return nil, nil
@@ -2185,6 +2806,7 @@ local function queue_simc_profile_request(run_droptimizer_now)
     runDroptimizerNow = run_droptimizer_now == true,
   }
   PuschelzDB.updatedAt = requested_at
+  sync_queue.mark_local_pending_reload({ "simc" }, true)
 
   if run_droptimizer_now then
     print("Puschelz: queued SimC export for sync. Run /reload or log out so the desktop client can upload it and start a Mythic Droptimizer run.")
@@ -2239,10 +2861,15 @@ local function ensure_bridge_db()
   if type(PuschelzBridgeDB.requiredAddons) ~= "table" then
     PuschelzBridgeDB.requiredAddons = {}
   end
+  if type(PuschelzBridgeDB.syncAcknowledgments) ~= "table" then
+    PuschelzBridgeDB.syncAcknowledgments = {}
+  end
 
   if not craft_request_bridge.bridgeDebugSynced then
     refresh_bridge_debug_snapshot()
   end
+
+  sync_queue.consume_bridge_acknowledgments()
 end
 
 trim_text = function(value)
@@ -3741,6 +4368,9 @@ refresh_minimap_button_position = function()
   PuschelzDB.ui.minimapButton.minimapPos = PuschelzDB.ui.minimapButton.angle
   MINIMAP_ICON:Refresh(MINIMAP_LDB_NAME, PuschelzDB.ui.minimapButton)
   minimap_ui.button = MINIMAP_ICON:GetMinimapButton(MINIMAP_LDB_NAME)
+  if refresh_minimap_pending_state then
+    refresh_minimap_pending_state()
+  end
 end
 
 local function update_minimap_menu_frame()
@@ -3869,17 +4499,68 @@ local function show_minimap_menu()
   frame:Raise()
 end
 
+local function add_sync_tooltip_lines(tooltip)
+  if not tooltip or type(tooltip.AddLine) ~= "function" then
+    return
+  end
+
+  local pending = sync_queue.current_local_pending_reload()
+  local guild_items = sync_queue.sorted_guild_queue_items()
+
+  tooltip:ClearLines()
+  tooltip:AddLine("Puschelz", 1, 0.82, 0, true)
+  tooltip:AddLine(" ")
+
+  if pending then
+    tooltip:AddLine(
+      string.format("You: pending %s", sync_queue.format_scope_labels(pending.changedScopes)),
+      1,
+      0.2,
+      0.2,
+      true
+    )
+  else
+    tooltip:AddLine("You: no pending reload", 0.55, 0.85, 0.55, true)
+  end
+
+  if #guild_items > 0 then
+    tooltip:AddLine(
+      string.format("Guild: %d pending", #guild_items),
+      1,
+      0.2,
+      0.2,
+      true
+    )
+
+    local next_item = guild_items[1]
+    if next_item then
+      tooltip:AddLine(
+        string.format(
+          "Next: %s (%s)",
+          tostring(next_item.subjectName or next_item.subjectKey or "?"),
+          sync_queue.format_scope_labels(next_item.changedScopes)
+        ),
+        0.82,
+        0.82,
+        0.82,
+        true
+      )
+    end
+  else
+    tooltip:AddLine("Guild: queue empty", 0.55, 0.85, 0.55, true)
+  end
+
+  tooltip:AddLine(" ")
+  tooltip:AddLine("Click to open the sync menu.", 0.8, 0.8, 0.8)
+end
+
 local function show_addon_compartment_tooltip(button)
   if not button then
     return
   end
 
   GameTooltip:SetOwner(button, "ANCHOR_LEFT")
-  GameTooltip:AddLine("Puschelz", 1, 0.82, 0, true)
-  GameTooltip:AddLine(" ")
-  GameTooltip:AddLine("Open the sync menu for calendar, guild orders, and SimC export actions.", 1, 1, 1, true)
-  GameTooltip:AddLine(" ")
-  GameTooltip:AddLine("Click to open the sync menu.", 0.8, 0.8, 0.8)
+  add_sync_tooltip_lines(GameTooltip)
   GameTooltip:Show()
 end
 
@@ -3900,6 +4581,42 @@ end
 
 function PuschelzAddonCompartment_OnLeave()
   hide_addon_compartment_tooltip()
+end
+
+refresh_minimap_pending_state = function()
+  local pending = sync_queue.current_local_pending_reload()
+  local has_pending = pending ~= nil or #sync_queue.sorted_guild_queue_items() > 0
+  local button = minimap_ui.button
+
+  if not button and ensure_minimap_button then
+    button = ensure_minimap_button()
+  end
+
+  if not button then
+    return
+  end
+
+  if not minimap_ui.pendingDot then
+    local dot = button:CreateTexture(nil, "OVERLAY")
+    dot:SetSize(10, 10)
+    dot:SetTexture("Interface\\COMMON\\Indicator-Red")
+    dot:SetPoint("TOPRIGHT", button, "TOPRIGHT", 2, 1)
+    dot:Hide()
+    minimap_ui.pendingDot = dot
+  end
+
+  if has_pending then
+    minimap_ui.pendingDot:Show()
+  else
+    minimap_ui.pendingDot:Hide()
+  end
+end
+
+refresh_sync_state_visuals = function()
+  sync_queue.prune_guild_queue()
+  if refresh_minimap_pending_state then
+    refresh_minimap_pending_state()
+  end
 end
 
 ensure_minimap_button = function()
@@ -3926,15 +4643,7 @@ ensure_minimap_button = function()
         show_minimap_menu()
       end,
       OnTooltipShow = function(tooltip)
-        if not tooltip or type(tooltip.AddLine) ~= "function" then
-          return
-        end
-        tooltip:ClearLines()
-        tooltip:AddLine("Puschelz")
-        tooltip:AddLine(" ")
-        tooltip:AddLine("Open the sync menu for calendar, guild orders, and SimC export actions.", 1, 1, 1, true)
-        tooltip:AddLine(" ")
-        tooltip:AddLine("Click to open the sync menu.", 0.8, 0.8, 0.8)
+        add_sync_tooltip_lines(tooltip)
       end,
     })
   end
@@ -3945,17 +4654,23 @@ ensure_minimap_button = function()
 
   refresh_minimap_button_position()
   minimap_ui.button = MINIMAP_ICON:GetMinimapButton(MINIMAP_LDB_NAME)
+  if refresh_minimap_pending_state then
+    refresh_minimap_pending_state()
+  end
   return minimap_ui.button
 end
 
 local function print_status()
   ensure_db()
+  sync_queue.prune_guild_queue()
 
   local bank_tabs = PuschelzDB.guildBank.tabs or {}
   local calendar_events = PuschelzDB.calendar.events or {}
   local guild_orders = PuschelzDB.guildOrders.orders or {}
   local simc_request = type(PuschelzDB.simcRequest) == "table" and PuschelzDB.simcRequest or nil
   local required_addon_summary = summarize_required_addon_compliance()
+  local pending_reload = sync_queue.current_local_pending_reload()
+  local guild_queue_items = sync_queue.sorted_guild_queue_items()
 
   local bank_scan = PuschelzDB.guildBank.lastScannedAt
   local calendar_scan = PuschelzDB.calendar.lastScannedAt
@@ -3984,6 +4699,18 @@ local function print_status()
         simc_request_at and date("%Y-%m-%d %H:%M", math.floor(simc_request_at / 1000)) or "unknown"
       )
     )
+  end
+
+  if pending_reload then
+    print(string.format(
+      "Puschelz: pendingReload=v%d (%s)",
+      tonumber(pending_reload.payloadVersion) or 0,
+      sync_queue.format_scope_labels(pending_reload.changedScopes)
+    ))
+  end
+
+  if #guild_queue_items > 0 then
+    print(string.format("Puschelz: guildSyncQueue=%d", #guild_queue_items))
   end
 
   local version_text = required_addon_summary.requiredAddonsVersion > 0
@@ -4089,8 +4816,10 @@ frame:SetScript("OnEvent", function(_, event, ...)
     seed_raid_random_delay()
     register_raid_status_prefix()
     register_craft_request_prefix()
+    sync_queue.register_prefix()
     broadcast_open_bridge_requests()
     schedule_group_roster_update()
+    refresh_sync_state_visuals()
     return
   end
 
@@ -4153,6 +4882,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
       handle_raid_addon_message(prefix, message, channel, sender)
     end
     if channel == "GUILD" then
+      sync_queue.handle_addon_message(prefix, message, channel, sender)
       handle_craft_request_addon_message(prefix, message, channel, sender)
     end
     return
