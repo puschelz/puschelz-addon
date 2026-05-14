@@ -1528,6 +1528,7 @@ end
 
 local refresh_calendar_sync_button
 local request_calendar_scan
+local try_load_addon_by_name
 
 local function is_frame_widget(value)
   return type(value) == "table" and type(value.GetObjectType) == "function"
@@ -1544,6 +1545,30 @@ local function calendar_frame_is_visible()
   return type(CalendarFrame) == "table"
     and type(CalendarFrame.IsShown) == "function"
     and CalendarFrame:IsShown()
+end
+
+local function open_calendar_frame()
+  if calendar_frame_is_visible() then
+    return true
+  end
+
+  try_load_addon_by_name("Blizzard_Calendar")
+
+  if calendar_frame_is_visible() then
+    return true
+  end
+
+  if type(ToggleCalendar) == "function" then
+    ToggleCalendar()
+  elseif type(CalendarFrame) == "table" then
+    if type(ShowUIPanel) == "function" then
+      ShowUIPanel(CalendarFrame)
+    elseif type(CalendarFrame.Show) == "function" then
+      CalendarFrame:Show()
+    end
+  end
+
+  return calendar_frame_is_visible()
 end
 
 local function get_calendar_filter_button()
@@ -1726,6 +1751,7 @@ request_calendar_scan = function(notify_on_completion)
   end
   local request_generation = calendar_attendee_scan.requestGeneration
 
+  open_calendar_frame()
   C_Calendar.OpenCalendar()
   if C_Timer and C_Timer.After then
     C_Timer.After(1.5, function()
@@ -2589,7 +2615,7 @@ local function is_addon_loaded_by_name(addon_name)
   return false
 end
 
-local function try_load_addon_by_name(addon_name)
+try_load_addon_by_name = function(addon_name)
   if type(addon_name) ~= "string" or addon_name == "" then
     return false, "missing_name"
   end
@@ -4303,13 +4329,6 @@ local function update_minimap_menu_frame()
   buttons.calendar:SetText("Sync Calendar")
   buttons.calendar:Enable()
 
-  buttons.orders:SetText("Sync Guild Orders")
-  if is_any_guild_order_view_active() then
-    buttons.orders:Enable()
-  else
-    buttons.orders:Disable()
-  end
-
   buttons.simc:SetText(simc_label)
   if has_simc then
     buttons.simc:Enable()
@@ -4317,7 +4336,7 @@ local function update_minimap_menu_frame()
     buttons.simc:Disable()
   end
 
-  frame:SetHeight(200)
+  frame:SetHeight(168)
 end
 
 local function ensure_minimap_menu_frame()
@@ -4327,7 +4346,7 @@ local function ensure_minimap_menu_frame()
   end
 
   local frame = CreateFrame("Frame", "PuschelzMinimapMenuFrame", UIParent, "BasicFrameTemplateWithInset")
-  frame:SetSize(260, 200)
+  frame:SetSize(260, 168)
   frame:SetFrameStrata("DIALOG")
   frame:SetClampedToScreen(true)
   frame:SetMovable(true)
@@ -4362,18 +4381,10 @@ local function ensure_minimap_menu_frame()
         request_calendar_scan(true)
       end
     ),
-    orders = create_menu_button(
-      "PuschelzMinimapMenuOrdersButton",
-      "Sync Guild Orders",
-      -70,
-      function()
-        begin_full_guild_order_sync(true)
-      end
-    ),
     simc = create_menu_button(
       "PuschelzMinimapMenuSimcButton",
       "Sync SimC + Run Droptimizer",
-      -102,
+      -70,
       function()
         queue_simc_profile_request(true)
       end
@@ -4381,7 +4392,7 @@ local function ensure_minimap_menu_frame()
     close = create_menu_button(
       "PuschelzMinimapMenuCloseButton",
       "Close",
-      -144,
+      -102,
       function()
       end
     ),
