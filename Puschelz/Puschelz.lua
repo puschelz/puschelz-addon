@@ -597,6 +597,14 @@ function sync_queue.sanitize_field(value)
   return text
 end
 
+function sync_queue.append_hashed_field(parts, value)
+  local text = tostring(value or "")
+  table.insert(parts, tostring(#text))
+  table.insert(parts, ":")
+  table.insert(parts, text)
+  table.insert(parts, ";")
+end
+
 function sync_queue.current_subject_key()
   local subject_key, subject_name = local_player_identity()
   return subject_key, subject_name
@@ -634,6 +642,7 @@ function sync_queue.prune_guild_queue()
   ensure_db()
   local now_ms = now_epoch_ms()
   local local_subject_key = select(1, sync_queue.current_subject_key())
+  local rebuilt = {}
 
   for subject_key, item in pairs(PuschelzDB.guildSyncQueue) do
     local normalized_key = sync_queue.normalize_subject_key(subject_key)
@@ -641,21 +650,18 @@ function sync_queue.prune_guild_queue()
       or sync_queue.queue_item_is_expired(item, now_ms)
       or (local_subject_key ~= nil and normalized_key == local_subject_key)
 
-    if remove_item then
-      PuschelzDB.guildSyncQueue[subject_key] = nil
-    elseif normalized_key ~= subject_key then
-      PuschelzDB.guildSyncQueue[subject_key] = nil
-      item.subjectKey = normalized_key
-      item.changedScopes = sync_queue.normalize_scope_list(item.changedScopes)
-      PuschelzDB.guildSyncQueue[normalized_key] = item
-    else
+    if not remove_item then
       item.changedScopes = sync_queue.normalize_scope_list(item.changedScopes)
       item.payloadVersion = tonumber(item.payloadVersion) or 0
       item.createdAt = tonumber(item.createdAt) or now_ms
       item.updatedAt = tonumber(item.updatedAt) or item.createdAt
       item.lastBroadcastAt = tonumber(item.lastBroadcastAt) or item.updatedAt
+      item.subjectKey = normalized_key
+      rebuilt[normalized_key] = item
     end
   end
+
+  PuschelzDB.guildSyncQueue = rebuilt
 end
 
 function sync_queue.sorted_guild_queue_items()
@@ -706,21 +712,19 @@ function sync_queue.build_calendar_signature()
   local parts = {}
 
   for _, event in ipairs(PuschelzDB.calendar.events or {}) do
-    table.insert(parts, tostring(event.wowEventId or ""))
-    table.insert(parts, tostring(event.title or ""))
-    table.insert(parts, tostring(event.eventType or ""))
-    table.insert(parts, tostring(event.startTime or ""))
-    table.insert(parts, tostring(event.endTime or ""))
+    sync_queue.append_hashed_field(parts, event.wowEventId)
+    sync_queue.append_hashed_field(parts, event.title)
+    sync_queue.append_hashed_field(parts, event.eventType)
+    sync_queue.append_hashed_field(parts, event.startTime)
+    sync_queue.append_hashed_field(parts, event.endTime)
 
     for _, attendee in ipairs(event.attendees or {}) do
-      table.insert(parts, tostring(attendee.name or ""))
-      table.insert(parts, tostring(attendee.status or ""))
+      sync_queue.append_hashed_field(parts, attendee.name)
+      sync_queue.append_hashed_field(parts, attendee.status)
     end
-
-    table.insert(parts, ";")
   end
 
-  return tostring(stable_hash_number(table.concat(parts, "|")))
+  return tostring(stable_hash_number(table.concat(parts)))
 end
 
 function sync_queue.build_guild_orders_signature()
@@ -728,29 +732,28 @@ function sync_queue.build_guild_orders_signature()
   local parts = {}
 
   for _, order in ipairs(PuschelzDB.guildOrders.orders or {}) do
-    table.insert(parts, tostring(order.orderId or ""))
-    table.insert(parts, tostring(order.itemId or ""))
-    table.insert(parts, tostring(order.spellId or ""))
-    table.insert(parts, tostring(order.orderState or ""))
-    table.insert(parts, tostring(order.expirationTime or ""))
-    table.insert(parts, tostring(order.claimEndTime or ""))
-    table.insert(parts, tostring(order.minQuality or ""))
-    table.insert(parts, tostring(order.tipAmount or ""))
-    table.insert(parts, tostring(order.consortiumCut or ""))
-    table.insert(parts, order.isRecraft == true and "1" or "0")
-    table.insert(parts, order.isFulfillable == true and "1" or "0")
-    table.insert(parts, tostring(order.reagentState or ""))
-    table.insert(parts, tostring(order.customerGuid or ""))
-    table.insert(parts, tostring(order.customerName or ""))
-    table.insert(parts, tostring(order.crafterGuid or ""))
-    table.insert(parts, tostring(order.crafterName or ""))
-    table.insert(parts, tostring(order.customerNotes or ""))
-    table.insert(parts, tostring(order.outputItemHyperlink or ""))
-    table.insert(parts, tostring(order.recraftItemHyperlink or ""))
-    table.insert(parts, ";")
+    sync_queue.append_hashed_field(parts, order.orderId)
+    sync_queue.append_hashed_field(parts, order.itemId)
+    sync_queue.append_hashed_field(parts, order.spellId)
+    sync_queue.append_hashed_field(parts, order.orderState)
+    sync_queue.append_hashed_field(parts, order.expirationTime)
+    sync_queue.append_hashed_field(parts, order.claimEndTime)
+    sync_queue.append_hashed_field(parts, order.minQuality)
+    sync_queue.append_hashed_field(parts, order.tipAmount)
+    sync_queue.append_hashed_field(parts, order.consortiumCut)
+    sync_queue.append_hashed_field(parts, order.isRecraft == true and "1" or "0")
+    sync_queue.append_hashed_field(parts, order.isFulfillable == true and "1" or "0")
+    sync_queue.append_hashed_field(parts, order.reagentState)
+    sync_queue.append_hashed_field(parts, order.customerGuid)
+    sync_queue.append_hashed_field(parts, order.customerName)
+    sync_queue.append_hashed_field(parts, order.crafterGuid)
+    sync_queue.append_hashed_field(parts, order.crafterName)
+    sync_queue.append_hashed_field(parts, order.customerNotes)
+    sync_queue.append_hashed_field(parts, order.outputItemHyperlink)
+    sync_queue.append_hashed_field(parts, order.recraftItemHyperlink)
   end
 
-  return tostring(stable_hash_number(table.concat(parts, "|")))
+  return tostring(stable_hash_number(table.concat(parts)))
 end
 
 function sync_queue.build_simc_signature()
@@ -760,14 +763,13 @@ function sync_queue.build_simc_signature()
     return "0"
   end
 
-  local parts = {
-    tostring(request.characterName or ""),
-    tostring(request.realmName or ""),
-    request.runDroptimizerNow == true and "1" or "0",
-    tostring(request.profileText or ""),
-  }
+  local parts = {}
+  sync_queue.append_hashed_field(parts, request.characterName)
+  sync_queue.append_hashed_field(parts, request.realmName)
+  sync_queue.append_hashed_field(parts, request.runDroptimizerNow == true and "1" or "0")
+  sync_queue.append_hashed_field(parts, request.profileText)
 
-  return tostring(stable_hash_number(table.concat(parts, "|")))
+  return tostring(stable_hash_number(table.concat(parts)))
 end
 
 function sync_queue.current_scope_signatures()
@@ -868,11 +870,16 @@ function sync_queue.consume_bridge_acknowledgments()
   end
 
   local changed = false
-  for _, entry in pairs(PuschelzBridgeDB.syncAcknowledgments) do
+  local remaining = {}
+  for key, entry in pairs(PuschelzBridgeDB.syncAcknowledgments) do
     if sync_queue.apply_bridge_acknowledgment(entry) then
       changed = true
+    else
+      remaining[key] = entry
     end
   end
+
+  PuschelzBridgeDB.syncAcknowledgments = remaining
 
   if changed and refresh_sync_state_visuals then
     refresh_sync_state_visuals()
@@ -972,6 +979,9 @@ function sync_queue.mark_local_pending_reload(changed_scopes, should_broadcast)
   if pending and pending.subjectKey ~= subject_key then
     pending = nil
     PuschelzDB.pendingReload = {}
+  end
+  if baseline.subjectKey ~= subject_key then
+    baseline = {}
   end
 
   local current_version = pending and (tonumber(pending.payloadVersion) or 0) or (tonumber(baseline.payloadVersion) or 0)

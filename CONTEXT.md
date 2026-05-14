@@ -55,13 +55,13 @@ _Avoid_: Opaque indicator, combined status blob, verbose queue dump
 ## Relationships
 
 - A **Pending Reload** is created when the addon updates sync data that the desktop app reads from SavedVariables.
-- A **Pending Reload** is cleared by `/reload` or logout because those actions flush SavedVariables to disk.
+- `/reload` or logout flush a **Pending Reload** to SavedVariables on disk so the desktop app can read it, but they do not clear the pending state by themselves.
 - A **Sync Executor** uploads data on behalf of a **Sync Subject**.
 - A **Pending Reload** belongs to a **Sync Subject** even when a different **Sync Executor** completes the backend sync.
 - A **Guild Sync Queue** contains one pending work item per `character-realm` **Sync Subject**.
 - A **Queue Work Item** is replaced or refreshed when the same `character-realm` produces newer qualifying sync data.
 - A **Queue Work Item** is uniquely identified by **Sync Subject** plus **Payload Version**.
-- Receivers ignore broadcasts whose **Payload Version** is older than or equal to the stored version for that **Sync Subject**.
+- Receivers ignore broadcasts whose **Payload Version** is older than the stored version for that **Sync Subject** and may refresh metadata when the version is equal.
 - A **Payload Version** covers the whole qualifying sync payload for one **Sync Subject**, not individual scopes.
 - **Changed Scopes** explain why a **Payload Version** advanced, but they do not create separate queue items.
 - A **Bridge Acknowledgment** confirms backend acceptance for one **Sync Subject** and **Payload Version**.
@@ -89,7 +89,7 @@ _Avoid_: Opaque indicator, combined status blob, verbose queue dump
 > **Domain expert:** "No. Multiple broadcasts are allowed, but receivers fold them into one **Queue Work Item** for that `character-realm`."
 >
 > **Dev:** "How do receivers know whether a rebroadcast is new work?"
-> **Domain expert:** "They compare the incoming **Payload Version** for that **Sync Subject** against the stored one and ignore older or equal versions."
+> **Domain expert:** "They compare the incoming **Payload Version** for that **Sync Subject** against the stored one, ignore older versions, and may refresh metadata for equal versions."
 >
 > **Dev:** "What if calendar changed after guild orders were already synced?"
 > **Domain expert:** "The subject gets one newer **Payload Version** and may resend already-synced scopes; the backend must handle that replay safely."
