@@ -1,0 +1,29 @@
+name: Validate Lua
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  compile-lua:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Lua 5.1 compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.1
+
+      - name: Compile addon Lua files
+        run: |
+          find Puschelz PuschelzBridge -type f -name '*.lua' -print0 \
+            | sort -z \
+            | while IFS= read -r -d '' file; do
+                echo "Compiling $file"
+                luac5.1 -p "$file"
+              done
