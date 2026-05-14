@@ -1050,7 +1050,11 @@ function sync_queue.handle_addon_message(prefix, message, channel, sender)
     return
   end
 
-  local sender_key = select(1, sync_queue.normalize_subject_key(sender))
+  local sender_key, sender_name = sync_queue.normalize_subject_key(sender)
+  if not sender_key then
+    return
+  end
+
   local local_subject_key = select(1, sync_queue.current_subject_key())
   if sender_key and local_subject_key and sender_key == local_subject_key then
     return
@@ -1060,6 +1064,12 @@ function sync_queue.handle_addon_message(prefix, message, channel, sender)
   if not parsed then
     return
   end
+
+  if parsed.subjectKey ~= sender_key then
+    return
+  end
+
+  parsed.subjectName = sender_name or parsed.subjectName
 
   if local_subject_key and parsed.subjectKey == local_subject_key then
     return
