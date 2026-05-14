@@ -3314,7 +3314,8 @@ local function build_craft_request_payloads(snapshot_version, request)
 end
 
 local function broadcast_open_bridge_requests()
-  local snapshot_version = PuschelzBridgeSnapshot.get_snapshot_version()
+  local bridge_root = PuschelzBridgeSnapshot.ensure_loaded()
+  local snapshot_version = PuschelzBridgeSnapshot.get_snapshot_version(bridge_root)
   if not snapshot_version or snapshot_version <= 0 then
     return
   end
@@ -3322,7 +3323,7 @@ local function broadcast_open_bridge_requests()
     return
   end
 
-  for _, request in ipairs(PuschelzBridgeSnapshot.get_open_requests()) do
+  for _, request in ipairs(PuschelzBridgeSnapshot.get_open_requests(bridge_root)) do
     if type(request) == "table"
       and (request.status == "pending_web" or request.status == "open_ingame")
       and type(request.requestId) == "string"
@@ -3692,12 +3693,13 @@ refresh_place_order_status_widget = function()
 
   local spell_id, item_id = resolve_place_order_recipe_context(form)
   local key = recipe_bridge_key(spell_id, item_id)
-  local snapshot_version = PuschelzBridgeSnapshot.get_snapshot_version()
+  local bridge_root = PuschelzBridgeSnapshot.ensure_loaded()
+  local snapshot_version = PuschelzBridgeSnapshot.get_snapshot_version(bridge_root)
 
   local state_key = nil
   local text = nil
   local color = { 1, 0.82, 0.3 }
-  local recipe_entry = key and PuschelzBridgeSnapshot.get_recipe_entry(key) or nil
+  local recipe_entry = key and PuschelzBridgeSnapshot.get_recipe_entry(key, bridge_root) or nil
   if snapshot_version <= 0 then
     text = "No data"
   elseif recipe_entry then

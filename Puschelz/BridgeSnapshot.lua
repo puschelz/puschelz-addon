@@ -21,6 +21,39 @@ local function ensure_table(parent, key)
   return parent[key]
 end
 
+local function validate_deps(deps)
+  if type(deps) ~= "table" then
+    return nil, "Puschelz bridge snapshot module is not configured."
+  end
+
+  local required_fields = {
+    "ensure_export_db",
+    "try_load_bridge_addon",
+    "is_addon_loaded_by_name",
+    "count_table_entries",
+    "now_epoch_ms",
+    "state",
+  }
+
+  for _, field in ipairs(required_fields) do
+    if deps[field] == nil then
+      return nil, string.format("Puschelz bridge snapshot module is missing dependency '%s'.", field)
+    end
+  end
+
+  if type(deps.ensure_export_db) ~= "function"
+    or type(deps.try_load_bridge_addon) ~= "function"
+    or type(deps.is_addon_loaded_by_name) ~= "function"
+    or type(deps.count_table_entries) ~= "function"
+    or type(deps.now_epoch_ms) ~= "function"
+    or type(deps.state) ~= "table"
+  then
+    return nil, "Puschelz bridge snapshot module dependencies are invalid."
+  end
+
+  return deps, nil
+end
+
 local function normalize_root()
   if type(PuschelzBridgeDB) ~= "table" then
     PuschelzBridgeDB = {}
@@ -35,7 +68,12 @@ local function normalize_root()
 end
 
 function PuschelzBridgeSnapshot.configure(deps)
-  PuschelzBridgeSnapshot.deps = deps or {}
+  local validated, error_message = validate_deps(deps)
+  if not validated then
+    error(error_message)
+  end
+
+  PuschelzBridgeSnapshot.deps = validated
 end
 
 function PuschelzBridgeSnapshot.ensure_loaded()
@@ -80,13 +118,13 @@ function PuschelzBridgeSnapshot.build_debug_summary(root)
   }
 end
 
-function PuschelzBridgeSnapshot.get_snapshot_version()
-  local root = PuschelzBridgeSnapshot.ensure_loaded()
+function PuschelzBridgeSnapshot.get_snapshot_version(root)
+  root = root or PuschelzBridgeSnapshot.ensure_loaded()
   return tonumber(root.snapshotVersion) or 0
 end
 
-function PuschelzBridgeSnapshot.get_required_addons_config()
-  local root = PuschelzBridgeSnapshot.ensure_loaded()
+function PuschelzBridgeSnapshot.get_required_addons_config(root)
+  root = root or PuschelzBridgeSnapshot.ensure_loaded()
   return {
     requiredAddonsVersion = tonumber(root.requiredAddonsVersion) or 0,
     requiredAddonsConfiguredCount = tonumber(root.requiredAddonsConfiguredCount) or 0,
@@ -95,17 +133,17 @@ function PuschelzBridgeSnapshot.get_required_addons_config()
   }
 end
 
-function PuschelzBridgeSnapshot.get_open_requests()
-  local root = PuschelzBridgeSnapshot.ensure_loaded()
+function PuschelzBridgeSnapshot.get_open_requests(root)
+  root = root or PuschelzBridgeSnapshot.ensure_loaded()
   return root.openRequests
 end
 
-function PuschelzBridgeSnapshot.get_recipe_entry(key)
+function PuschelzBridgeSnapshot.get_recipe_entry(key, root)
   if type(key) ~= "string" or key == "" then
     return nil
   end
 
-  local root = PuschelzBridgeSnapshot.ensure_loaded()
+  root = root or PuschelzBridgeSnapshot.ensure_loaded()
   local entry = root.recipesByKey[key]
   if type(entry) ~= "table" then
     return nil
