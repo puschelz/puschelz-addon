@@ -13,8 +13,6 @@ local GUILD_ORDER_STATE_EXPIRED = 15
 local MINIMAP_BUTTON_DEFAULT_ANGLE = 220
 local MINIMAP_LDB_NAME = "Puschelz"
 local MINIMAP_ICON_PATH = "Interface\\AddOns\\Puschelz\\Media\\puschelz-logo.png"
-local LDB = LibStub and LibStub("LibDataBroker-1.1", true)
-local MINIMAP_ICON = LibStub and LibStub("LibDBIcon-1.0", true)
 
 local function resolve_addon_version()
   local version
@@ -369,6 +367,8 @@ local calendar_sync_ui = {
 local minimap_ui = {
   button = nil,
   dataObject = nil,
+  ldb = LibStub and LibStub("LibDataBroker-1.1", true),
+  iconLib = LibStub and LibStub("LibDBIcon-1.0", true),
   menuFrame = nil,
   menuButtons = nil,
   pendingDot = nil,
@@ -4299,7 +4299,7 @@ end
 
 refresh_minimap_button_position = function()
   ensure_db()
-  if not MINIMAP_ICON or not MINIMAP_ICON.IsRegistered or not MINIMAP_ICON:IsRegistered(MINIMAP_LDB_NAME) then
+  if not minimap_ui.iconLib or not minimap_ui.iconLib.IsRegistered or not minimap_ui.iconLib:IsRegistered(MINIMAP_LDB_NAME) then
     return
   end
 
@@ -4307,8 +4307,8 @@ refresh_minimap_button_position = function()
     or tonumber(PuschelzDB.ui.minimapButton.angle)
     or MINIMAP_BUTTON_DEFAULT_ANGLE
   PuschelzDB.ui.minimapButton.minimapPos = PuschelzDB.ui.minimapButton.angle
-  MINIMAP_ICON:Refresh(MINIMAP_LDB_NAME, PuschelzDB.ui.minimapButton)
-  minimap_ui.button = MINIMAP_ICON:GetMinimapButton(MINIMAP_LDB_NAME)
+  minimap_ui.iconLib:Refresh(MINIMAP_LDB_NAME, PuschelzDB.ui.minimapButton)
+  minimap_ui.button = minimap_ui.iconLib:GetMinimapButton(MINIMAP_LDB_NAME)
   if refresh_minimap_pending_state then
     refresh_minimap_pending_state()
   end
@@ -4546,11 +4546,11 @@ refresh_sync_state_visuals = function()
 end
 
 ensure_minimap_button = function()
-  if not LDB or not MINIMAP_ICON then
+  if not minimap_ui.ldb or not minimap_ui.iconLib then
     return nil
   end
 
-  if minimap_ui.button and MINIMAP_ICON.IsRegistered and MINIMAP_ICON:IsRegistered(MINIMAP_LDB_NAME) then
+  if minimap_ui.button and minimap_ui.iconLib.IsRegistered and minimap_ui.iconLib:IsRegistered(MINIMAP_LDB_NAME) then
     refresh_minimap_button_position()
     return minimap_ui.button
   end
@@ -4558,7 +4558,7 @@ ensure_minimap_button = function()
   ensure_db()
 
   if not minimap_ui.dataObject then
-    minimap_ui.dataObject = LDB:NewDataObject(MINIMAP_LDB_NAME, {
+    minimap_ui.dataObject = minimap_ui.ldb:NewDataObject(MINIMAP_LDB_NAME, {
       type = "launcher",
       text = "Puschelz",
       icon = MINIMAP_ICON_PATH,
@@ -4574,12 +4574,12 @@ ensure_minimap_button = function()
     })
   end
 
-  if not MINIMAP_ICON:IsRegistered(MINIMAP_LDB_NAME) then
-    MINIMAP_ICON:Register(MINIMAP_LDB_NAME, minimap_ui.dataObject, PuschelzDB.ui.minimapButton)
+  if not minimap_ui.iconLib:IsRegistered(MINIMAP_LDB_NAME) then
+    minimap_ui.iconLib:Register(MINIMAP_LDB_NAME, minimap_ui.dataObject, PuschelzDB.ui.minimapButton)
   end
 
   refresh_minimap_button_position()
-  minimap_ui.button = MINIMAP_ICON:GetMinimapButton(MINIMAP_LDB_NAME)
+  minimap_ui.button = minimap_ui.iconLib:GetMinimapButton(MINIMAP_LDB_NAME)
   if refresh_minimap_pending_state then
     refresh_minimap_pending_state()
   end
