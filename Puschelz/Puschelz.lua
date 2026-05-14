@@ -1,5 +1,8 @@
 local ADDON_NAME = ...
 
+assert(PuschelzExportSnapshot, "Puschelz export snapshot module missing")
+assert(PuschelzBridgeSnapshot, "Puschelz bridge snapshot module missing")
+
 local SCHEMA_VERSION = 17
 local GUILD_BANK_SLOTS_PER_TAB = 98
 local CALENDAR_MONTH_OFFSETS = { -1, 0, 1, 2 }
@@ -446,69 +449,7 @@ local function schedule_craft_request_widget_refresh()
 end
 
 local function ensure_db()
-  if type(PuschelzDB) ~= "table" then
-    PuschelzDB = {}
-  end
-
-  PuschelzDB.schemaVersion = SCHEMA_VERSION
-  PuschelzDB.updatedAt = PuschelzDB.updatedAt or 0
-
-  if type(PuschelzDB.player) ~= "table" then
-    PuschelzDB.player = {}
-  end
-
-  if type(PuschelzDB.guildBank) ~= "table" then
-    PuschelzDB.guildBank = {}
-  end
-  if type(PuschelzDB.guildBank.tabs) ~= "table" then
-    PuschelzDB.guildBank.tabs = {}
-  end
-  if type(PuschelzDB.guildBank.tabsByIndex) ~= "table" then
-    PuschelzDB.guildBank.tabsByIndex = {}
-  end
-
-  if type(PuschelzDB.calendar) ~= "table" then
-    PuschelzDB.calendar = {}
-  end
-  if type(PuschelzDB.calendar.events) ~= "table" then
-    PuschelzDB.calendar.events = {}
-  end
-
-  if type(PuschelzDB.guildOrders) ~= "table" then
-    PuschelzDB.guildOrders = {}
-  end
-  if type(PuschelzDB.guildOrders.orders) ~= "table" then
-    PuschelzDB.guildOrders.orders = {}
-  end
-
-  if type(PuschelzDB.requiredAddonCompliance) ~= "table" then
-    PuschelzDB.requiredAddonCompliance = {}
-  end
-
-  if type(PuschelzDB.pendingReload) ~= "table" then
-    PuschelzDB.pendingReload = {}
-  end
-  if type(PuschelzDB.lastSyncedPayload) ~= "table" then
-    PuschelzDB.lastSyncedPayload = {}
-  end
-  if type(PuschelzDB.guildSyncQueue) ~= "table" then
-    PuschelzDB.guildSyncQueue = {}
-  end
-
-  if type(PuschelzDB.ui) ~= "table" then
-    PuschelzDB.ui = {}
-  end
-  if type(PuschelzDB.ui.minimapButton) ~= "table" then
-    PuschelzDB.ui.minimapButton = {}
-  end
-  if type(PuschelzDB.ui.minimapButton.minimapPos) ~= "number" then
-    PuschelzDB.ui.minimapButton.minimapPos =
-      tonumber(PuschelzDB.ui.minimapButton.angle) or MINIMAP_BUTTON_DEFAULT_ANGLE
-  end
-  if type(PuschelzDB.ui.minimapButton.angle) ~= "number" then
-    PuschelzDB.ui.minimapButton.angle =
-      tonumber(PuschelzDB.ui.minimapButton.minimapPos) or MINIMAP_BUTTON_DEFAULT_ANGLE
-  end
+  return PuschelzExportSnapshot.ensure_db(SCHEMA_VERSION, MINIMAP_BUTTON_DEFAULT_ANGLE)
 end
 
 function sync_queue.normalize_scope_list(raw_scopes)
@@ -865,22 +806,7 @@ function sync_queue.apply_bridge_acknowledgment(raw_entry)
 end
 
 function sync_queue.consume_bridge_acknowledgments()
-  if type(PuschelzBridgeDB) ~= "table" or type(PuschelzBridgeDB.syncAcknowledgments) ~= "table" then
-    return
-  end
-
-  local changed = false
-  local remaining = {}
-  for key, entry in pairs(PuschelzBridgeDB.syncAcknowledgments) do
-    if sync_queue.apply_bridge_acknowledgment(entry) then
-      changed = true
-    else
-      remaining[key] = entry
-    end
-  end
-
-  PuschelzBridgeDB.syncAcknowledgments = remaining
-
+  local changed = PuschelzBridgeSnapshot.consume_acknowledgments(sync_queue.apply_bridge_acknowledgment)
   if changed and refresh_sync_state_visuals then
     refresh_sync_state_visuals()
   end
@@ -2839,52 +2765,21 @@ end
 
 local function refresh_bridge_debug_snapshot()
   ensure_db()
-  PuschelzDB.bridgeDebug = {
-    loaded = craft_request_bridge.bridgeLoaded and true or false,
-    loadReason = tostring(craft_request_bridge.bridgeLoadReason or "unknown"),
-    addonLoaded = is_addon_loaded_by_name("PuschelzBridge") and true or false,
-    snapshotVersion = tonumber(PuschelzBridgeDB and PuschelzBridgeDB.snapshotVersion),
-    requiredAddonsVersion = tonumber(PuschelzBridgeDB and PuschelzBridgeDB.requiredAddonsVersion),
-    requiredAddonsConfiguredCount = tonumber(PuschelzBridgeDB and PuschelzBridgeDB.requiredAddonsConfiguredCount),
-    invalidRequiredAddonCount = tonumber(PuschelzBridgeDB and PuschelzBridgeDB.invalidRequiredAddonCount),
-    generatedAt = tonumber(PuschelzBridgeDB and PuschelzBridgeDB.generatedAt),
-    recipeCount = count_table_entries(PuschelzBridgeDB and PuschelzBridgeDB.recipesByKey),
-    openRequestCount = type(PuschelzBridgeDB and PuschelzBridgeDB.openRequests) == "table" and #PuschelzBridgeDB.openRequests or 0,
-    requiredAddonCount = type(PuschelzBridgeDB and PuschelzBridgeDB.requiredAddons) == "table" and #PuschelzBridgeDB.requiredAddons or 0,
-    updatedAt = now_epoch_ms(),
-  }
+  PuschelzDB.bridgeDebug = PuschelzBridgeSnapshot.build_debug_summary()
   craft_request_bridge.bridgeDebugSynced = true
 end
+
+PuschelzBridgeSnapshot.configure({
+  ensure_export_db = ensure_db,
+  try_load_bridge_addon = try_load_bridge_addon,
+  is_addon_loaded_by_name = is_addon_loaded_by_name,
+  count_table_entries = count_table_entries,
+  now_epoch_ms = now_epoch_ms,
+  state = craft_request_bridge,
+})
+
 local function ensure_bridge_db()
-  ensure_db()
-  if not craft_request_bridge.bridgeLoadAttempted then
-    local loaded, reason = try_load_bridge_addon()
-    craft_request_bridge.bridgeLoadAttempted = true
-    craft_request_bridge.bridgeLoaded = loaded and true or false
-    craft_request_bridge.bridgeLoadReason = tostring(reason or "unknown")
-    craft_request_bridge.bridgeDebugSynced = false
-  elseif not craft_request_bridge.bridgeLoaded and is_addon_loaded_by_name("PuschelzBridge") then
-    craft_request_bridge.bridgeLoaded = true
-    craft_request_bridge.bridgeLoadReason = "already_loaded"
-    craft_request_bridge.bridgeDebugSynced = false
-  end
-
-  if type(PuschelzBridgeDB) ~= "table" then
-    PuschelzBridgeDB = {}
-  end
-  if type(PuschelzBridgeDB.recipesByKey) ~= "table" then
-    PuschelzBridgeDB.recipesByKey = {}
-  end
-  if type(PuschelzBridgeDB.openRequests) ~= "table" then
-    PuschelzBridgeDB.openRequests = {}
-  end
-  if type(PuschelzBridgeDB.requiredAddons) ~= "table" then
-    PuschelzBridgeDB.requiredAddons = {}
-  end
-  if type(PuschelzBridgeDB.syncAcknowledgments) ~= "table" then
-    PuschelzBridgeDB.syncAcknowledgments = {}
-  end
-
+  PuschelzBridgeSnapshot.ensure_loaded()
   if not craft_request_bridge.bridgeDebugSynced then
     refresh_bridge_debug_snapshot()
   end
@@ -3019,15 +2914,15 @@ local function collect_required_addon_aliases(match_folder_names)
 end
 
 local function summarize_required_addon_compliance()
-  ensure_bridge_db()
+  local bridge_config = PuschelzBridgeSnapshot.get_required_addons_config()
 
   local active_addons = build_active_addon_lookup()
   local missing = {}
   local required_count = 0
-  local configured_count = tonumber(PuschelzBridgeDB.requiredAddonsConfiguredCount) or 0
-  local invalid_configured_count = tonumber(PuschelzBridgeDB.invalidRequiredAddonCount) or 0
+  local configured_count = bridge_config.requiredAddonsConfiguredCount
+  local invalid_configured_count = bridge_config.invalidRequiredAddonCount
 
-  for _, addon in ipairs(PuschelzBridgeDB.requiredAddons or {}) do
+  for _, addon in ipairs(bridge_config.requiredAddons) do
     if type(addon) == "table" and type(addon.name) == "string" then
       local normalized_aliases, display_aliases = collect_required_addon_aliases(addon.matchFolderNames)
       if #normalized_aliases > 0 then
@@ -3058,7 +2953,7 @@ local function summarize_required_addon_compliance()
   end)
 
   local hash_parts = {
-    tostring(tonumber(PuschelzBridgeDB.requiredAddonsVersion) or 0),
+    tostring(bridge_config.requiredAddonsVersion),
     tostring(configured_count),
     tostring(invalid_configured_count),
   }
@@ -3068,7 +2963,7 @@ local function summarize_required_addon_compliance()
   end
 
   return {
-    requiredAddonsVersion = tonumber(PuschelzBridgeDB.requiredAddonsVersion) or 0,
+    requiredAddonsVersion = bridge_config.requiredAddonsVersion,
     configuredCount = configured_count,
     invalidConfiguredCount = invalid_configured_count,
     requiredCount = required_count,
@@ -3217,7 +3112,6 @@ local function bridge_character_matches(matched_keys, current_key)
 end
 
 local function active_bridge_requests_for_character()
-  ensure_bridge_db()
   local current_key = bridge_current_character_key()
   if not current_key then
     return {}
@@ -3225,7 +3119,7 @@ local function active_bridge_requests_for_character()
 
   local now_ms = now_epoch_ms()
   local matches = {}
-  for _, request in ipairs(PuschelzBridgeDB.openRequests or {}) do
+  for _, request in ipairs(PuschelzBridgeSnapshot.get_open_requests()) do
     if type(request) == "table"
       and (request.status == "pending_web" or request.status == "open_ingame")
       and tonumber(request.expiresAt)
@@ -3420,8 +3314,8 @@ local function build_craft_request_payloads(snapshot_version, request)
 end
 
 local function broadcast_open_bridge_requests()
-  ensure_bridge_db()
-  local snapshot_version = tonumber(PuschelzBridgeDB.snapshotVersion)
+  local bridge_root = PuschelzBridgeSnapshot.ensure_loaded()
+  local snapshot_version = PuschelzBridgeSnapshot.get_snapshot_version(bridge_root)
   if not snapshot_version or snapshot_version <= 0 then
     return
   end
@@ -3429,7 +3323,7 @@ local function broadcast_open_bridge_requests()
     return
   end
 
-  for _, request in ipairs(PuschelzBridgeDB.openRequests or {}) do
+  for _, request in ipairs(PuschelzBridgeSnapshot.get_open_requests(bridge_root)) do
     if type(request) == "table"
       and (request.status == "pending_web" or request.status == "open_ingame")
       and type(request.requestId) == "string"
@@ -3799,15 +3693,16 @@ refresh_place_order_status_widget = function()
 
   local spell_id, item_id = resolve_place_order_recipe_context(form)
   local key = recipe_bridge_key(spell_id, item_id)
-  ensure_bridge_db()
+  local bridge_root = PuschelzBridgeSnapshot.ensure_loaded()
+  local snapshot_version = PuschelzBridgeSnapshot.get_snapshot_version(bridge_root)
 
   local state_key = nil
   local text = nil
   local color = { 1, 0.82, 0.3 }
-  if not PuschelzBridgeDB.snapshotVersion then
+  local recipe_entry = key and PuschelzBridgeSnapshot.get_recipe_entry(key, bridge_root) or nil
+  if snapshot_version <= 0 then
     text = "No data"
-  elseif key and type(PuschelzBridgeDB.recipesByKey[key]) == "table" then
-    local recipe_entry = PuschelzBridgeDB.recipesByKey[key]
+  elseif recipe_entry then
     local crafter_count = tonumber(recipe_entry.crafterCount) or 0
     text = string.format("Guild craftable (%d)", crafter_count)
     color = { 0.3, 1, 0.4 }
