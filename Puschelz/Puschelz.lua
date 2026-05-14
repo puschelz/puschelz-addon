@@ -4597,6 +4597,7 @@ local function print_status()
   local required_addon_summary = summarize_required_addon_compliance()
   local pending_reload = sync_queue.current_local_pending_reload()
   local guild_queue_items = sync_queue.sorted_guild_queue_items()
+  local bridge_acknowledgments = PuschelzBridgeSnapshot.get_sync_acknowledgments()
 
   local bank_scan = PuschelzDB.guildBank.lastScannedAt
   local calendar_scan = PuschelzDB.calendar.lastScannedAt
@@ -4637,6 +4638,21 @@ local function print_status()
 
   if #guild_queue_items > 0 then
     print(string.format("Puschelz: guildSyncQueue=%d", #guild_queue_items))
+  end
+
+  local bridge_ack_count = count_table_entries(bridge_acknowledgments)
+  if bridge_ack_count > 0 then
+    local current_subject_key = select(1, sync_queue.current_subject_key())
+    local current_ack = current_subject_key and bridge_acknowledgments[current_subject_key] or nil
+    if type(current_ack) == "table" then
+      print(string.format(
+        "Puschelz: bridgeAcknowledgments=%d, current=v%d",
+        bridge_ack_count,
+        tonumber(current_ack.payloadVersion) or 0
+      ))
+    else
+      print(string.format("Puschelz: bridgeAcknowledgments=%d", bridge_ack_count))
+    end
   end
 
   local version_text = required_addon_summary.requiredAddonsVersion > 0
