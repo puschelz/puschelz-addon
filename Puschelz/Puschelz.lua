@@ -2914,7 +2914,8 @@ end
 local function build_simc_request_id()
   local guid = UnitGUID and UnitGUID("player") or "player"
   local sanitized_guid = tostring(guid or "player"):gsub("[^%w]", "")
-  return string.format("simc-%s-%d-%04d", sanitized_guid, now_epoch_ms(), math.random(0, 9999))
+  local timestamp_text = tostring(now_epoch_ms())
+  return string.format("simc-%s-%s-%04d", sanitized_guid, timestamp_text, math.random(0, 9999))
 end
 
 local function capture_current_simc_profile()
