@@ -3,6 +3,8 @@ local ADDON_NAME = ...
 assert(PuschelzExportSnapshot, "Puschelz export snapshot module missing")
 assert(PuschelzBridgeSnapshot, "Puschelz bridge snapshot module missing")
 
+-- Schema version tracks exported SavedVariables shape for release/debugging even
+-- when additive defaults can be populated lazily without a keyed migration.
 local SCHEMA_VERSION = 18
 local GUILD_BANK_SLOTS_PER_TAB = 98
 local CALENDAR_MONTH_OFFSETS = { -1, 0, 1, 2 }
@@ -599,6 +601,8 @@ do
 
     if settings.autoEnableChatLog then
       set_chat_logging_enabled(true, "auto")
+    else
+      set_chat_logging_enabled(false, "auto")
     end
 
     if not settings.autoEnableCombatLog then
@@ -634,6 +638,7 @@ do
   auto_logging.is_in_group_context = is_in_combat_log_group_context
   auto_logging.is_chat_logging_enabled = is_chat_logging_enabled
   auto_logging.is_combat_logging_enabled = is_combat_logging_enabled
+  auto_logging.print_message = print_logging_message
   auto_logging.set_chat_logging_enabled = set_chat_logging_enabled
   auto_logging.set_combat_logging_enabled = set_combat_logging_enabled
   auto_logging.schedule_evaluation = function()
@@ -2959,6 +2964,7 @@ end
 local function queue_simc_profile_request(run_droptimizer_now)
   ensure_db()
   refresh_player_metadata()
+  local previous_request = type(PuschelzDB.simcRequest) == "table" and PuschelzDB.simcRequest or nil
 
   local profile_text, profile_error = capture_current_simc_profile()
   if not profile_text then
@@ -2986,6 +2992,8 @@ local function queue_simc_profile_request(run_droptimizer_now)
   local pending = sync_queue.mark_local_pending_reload({ "simc" }, true)
 
   if not pending then
+    PuschelzDB.simcRequest = previous_request
+    PuschelzDB.updatedAt = now_epoch_ms()
     red_chat_message("Puschelz: SimC export captured, but pending reload was not created. Try /reload if the desktop client does not pick it up.")
     return false
   end
@@ -4611,10 +4619,14 @@ local function ensure_minimap_menu_frame()
   end
   frame.title:SetText("Puschelz")
 
-  local function create_menu_button(name, label, offset_y, on_click)
+  local function create_menu_button(name, label, anchor, on_click)
     local button = CreateFrame("Button", name, frame, "UIPanelButtonTemplate")
     button:SetSize(200, 24)
-    button:SetPoint("TOP", frame, "TOP", 0, offset_y)
+    if anchor.relativeTo then
+      button:SetPoint(anchor.point or "TOP", anchor.relativeTo, anchor.relativePoint or "BOTTOM", anchor.x or 0, anchor.y or 0)
+    else
+      button:SetPoint(anchor.point or "TOP", frame, anchor.relativePoint or "TOP", anchor.x or 0, anchor.y or 0)
+    end
     button:SetText(label)
     button:SetScript("OnClick", function()
       frame:Hide()
@@ -4623,10 +4635,14 @@ local function ensure_minimap_menu_frame()
     return button
   end
 
-  local function create_menu_toggle(name, label, offset_y, on_click, tooltip_lines, options)
+  local function create_menu_toggle(name, label, anchor, on_click, tooltip_lines, options)
     options = options or {}
     local toggle = CreateFrame("CheckButton", name, frame, "UICheckButtonTemplate")
-    toggle:SetPoint("TOPLEFT", frame, "TOPLEFT", options.indentX or 18, offset_y)
+    if anchor.relativeTo then
+      toggle:SetPoint(anchor.point or "TOPLEFT", anchor.relativeTo, anchor.relativePoint or "BOTTOMLEFT", anchor.x or 0, anchor.y or 0)
+    else
+      toggle:SetPoint(anchor.point or "TOPLEFT", frame, anchor.relativePoint or "TOPLEFT", anchor.x or (options.indentX or 18), anchor.y or 0)
+    end
     toggle:SetScript("OnClick", on_click)
     if options.scale then
       toggle:SetScale(options.scale)
@@ -4667,145 +4683,137 @@ local function ensure_minimap_menu_frame()
     return toggle
   end
 
-  local buttons = {
-    calendar = create_menu_button(
-      "PuschelzMinimapMenuCalendarButton",
-      "Sync Calendar",
-      -38,
-      function()
-        request_calendar_scan(true)
-      end
-    ),
-    simc = create_menu_button(
-      "PuschelzMinimapMenuSimcButton",
-      "Sync SimC + Run Droptimizer",
-      -70,
-      function()
-        queue_simc_profile_request(true)
-      end
-    ),
-    close = create_menu_button(
-      "PuschelzMinimapMenuCloseButton",
-      "Close",
-      -102,
-      function()
-      end
-    ),
-    autoChatLog = create_menu_toggle(
-      "PuschelzMinimapMenuAutoChatLogToggle",
-      "Auto enable chat log",
-      -110,
-      function(self)
-        auto_logging.ensure_settings().autoEnableChatLog = self:GetChecked() and true or false
-        auto_logging.set_chat_logging_enabled(self:GetChecked() and true or false, "manual toggle")
-        auto_logging.schedule_evaluation()
-        update_minimap_menu_frame()
-      end,
-      {
-        { text = "Keeps WoW chat logging enabled so the desktop client can read addon chat messages from WoWChatLog.txt.", wrap = true },
-        { text = "Recommended if you want reliable addon-to-desktop chatlog communication.", r = 0.8, g = 0.8, b = 0.8, wrap = true },
-      }
-    ),
-    autoCombatLog = create_menu_toggle(
-      "PuschelzMinimapMenuAutoCombatLogToggle",
-      "Auto enable combat log",
-      -138,
-      function(self)
-        local enabled = self:GetChecked() and true or false
-        local settings = auto_logging.ensure_settings()
-        settings.autoEnableCombatLog = enabled
+  local buttons = {}
 
-        if enabled then
-          if settings.onlyEnableCombatLogInGroupContext and not auto_logging.is_in_group_context() then
-            auto_logging.combatLogAutoStarted = false
-            if DEFAULT_CHAT_FRAME and type(DEFAULT_CHAT_FRAME.AddMessage) == "function" then
-              DEFAULT_CHAT_FRAME:AddMessage("Puschelz: combat logging armed and waiting for raid or instance group context.")
-            else
-              print("Puschelz: combat logging armed and waiting for raid or instance group context.")
-            end
-          else
-            auto_logging.set_combat_logging_enabled(true, "manual toggle")
-            auto_logging.combatLogAutoStarted = true
-          end
-        else
-          auto_logging.set_combat_logging_enabled(false, "manual toggle")
+  buttons.calendar = create_menu_button(
+    "PuschelzMinimapMenuCalendarButton",
+    "Sync Calendar",
+    { point = "TOP", relativePoint = "TOP", x = 0, y = -38 },
+    function()
+      request_calendar_scan(true)
+    end
+  )
+
+  buttons.simc = create_menu_button(
+    "PuschelzMinimapMenuSimcButton",
+    "Sync SimC + Run Droptimizer",
+    { relativeTo = buttons.calendar, point = "TOP", relativePoint = "BOTTOM", x = 0, y = -8 },
+    function()
+      queue_simc_profile_request(true)
+    end
+  )
+
+  buttons.autoChatLog = create_menu_toggle(
+    "PuschelzMinimapMenuAutoChatLogToggle",
+    "Auto enable chat log",
+    { relativeTo = buttons.simc, point = "TOPLEFT", relativePoint = "BOTTOMLEFT", x = -51, y = -20 },
+    function(self)
+      auto_logging.ensure_settings().autoEnableChatLog = self:GetChecked() and true or false
+      auto_logging.set_chat_logging_enabled(self:GetChecked() and true or false, "manual toggle")
+      auto_logging.schedule_evaluation()
+      update_minimap_menu_frame()
+    end,
+    {
+      { text = "Keeps WoW chat logging enabled so the desktop client can read addon chat messages from WoWChatLog.txt.", wrap = true },
+      { text = "Recommended if you want reliable addon-to-desktop chatlog communication.", r = 0.8, g = 0.8, b = 0.8, wrap = true },
+    }
+  )
+
+  buttons.autoCombatLog = create_menu_toggle(
+    "PuschelzMinimapMenuAutoCombatLogToggle",
+    "Auto enable combat log",
+    { relativeTo = buttons.autoChatLog, point = "TOPLEFT", relativePoint = "BOTTOMLEFT", x = 0, y = -12 },
+    function(self)
+      local enabled = self:GetChecked() and true or false
+      local settings = auto_logging.ensure_settings()
+      settings.autoEnableCombatLog = enabled
+
+      if enabled then
+        if settings.onlyEnableCombatLogInGroupContext and not auto_logging.is_in_group_context() then
           auto_logging.combatLogAutoStarted = false
+          auto_logging.print_message("Puschelz: combat logging armed and waiting for raid or instance group context.")
+        else
+          auto_logging.set_combat_logging_enabled(true, "manual toggle")
+          auto_logging.combatLogAutoStarted = true
         end
+      else
+        auto_logging.set_combat_logging_enabled(false, "manual toggle")
+        auto_logging.combatLogAutoStarted = false
+      end
 
-        auto_logging.schedule_evaluation()
-        update_minimap_menu_frame()
-      end,
-      {
-        { text = "Automatically turns on WoWCombatLog.txt for you.", wrap = true },
-        { text = "Useful quality-of-life if you want live Warcraft Logs, but not required for desktop client chatlog communication.", r = 0.8, g = 0.8, b = 0.8, wrap = true },
-      }
-    ),
-    combatLogOnlyInGroupContext = create_menu_toggle(
-      "PuschelzMinimapMenuCombatLogGroupContextToggle",
-      "Only auto enable in raid or instance groups",
-      -176,
-      function(self)
-        auto_logging.ensure_settings().onlyEnableCombatLogInGroupContext = self:GetChecked() and true or false
-        if not self:GetChecked() then
-          auto_logging.ensure_settings().stopCombatLogOnLeave = false
-        end
-        auto_logging.schedule_evaluation()
-        update_minimap_menu_frame()
-      end,
-      {
-        { text = "Waits to start combat logging until you are in a raid, party instance, or instance group context.", wrap = true },
-        { text = "This avoids generating extra logs outside relevant content.", r = 0.8, g = 0.8, b = 0.8, wrap = true },
-      },
-      {
-        indentX = 34,
-        labelWidth = 225,
-        scale = 0.92,
-        fontObject = GameFontHighlightSmall,
-      }
-    ),
-    stopCombatLogOnLeave = create_menu_toggle(
-      "PuschelzMinimapMenuCombatLogStopToggle",
-      "Auto stop after leaving raid or instance groups",
-      -200,
-      function(self)
-        auto_logging.ensure_settings().stopCombatLogOnLeave = self:GetChecked() and true or false
-        auto_logging.schedule_evaluation()
-        update_minimap_menu_frame()
-      end,
-      {
-        { text = "Only stops combat logging if Puschelz started it automatically.", wrap = true },
-        { text = "Manual combat logging stays under user control.", r = 0.8, g = 0.8, b = 0.8, wrap = true },
-      },
-      {
-        indentX = 34,
-        labelWidth = 225,
-        scale = 0.92,
-        fontObject = GameFontHighlightSmall,
-      }
-    ),
-    showCombatLogReminder = create_menu_toggle(
-      "PuschelzMinimapMenuCombatLogReminderToggle",
-      "Show Live Log reminder",
-      -224,
-      function(self)
-        auto_logging.ensure_settings().showCombatLogReminder = self:GetChecked() and true or false
-        update_minimap_menu_frame()
-      end,
-      {
-        { text = "Shows an on-screen reminder when Puschelz auto-starts combat logging.", wrap = true },
-        { text = "Useful if you want to remember enabling Live Log in the Warcraft Logs desktop app.", r = 0.8, g = 0.8, b = 0.8, wrap = true },
-      },
-      {
-        indentX = 34,
-        labelWidth = 225,
-        scale = 0.92,
-        fontObject = GameFontHighlightSmall,
-      }
-    ),
+      auto_logging.schedule_evaluation()
+      update_minimap_menu_frame()
+    end,
+    {
+      { text = "Automatically turns on WoWCombatLog.txt for you.", wrap = true },
+      { text = "Useful quality-of-life if you want live Warcraft Logs, but not required for desktop client chatlog communication.", r = 0.8, g = 0.8, b = 0.8, wrap = true },
+    }
+  )
+
+  local sub_toggle_options = {
+    indentX = 34,
+    labelWidth = 225,
+    scale = 0.92,
+    fontObject = GameFontHighlightSmall,
   }
 
-  buttons.close:ClearAllPoints()
-  buttons.close:SetPoint("TOP", frame, "TOP", 0, -270)
+  buttons.combatLogOnlyInGroupContext = create_menu_toggle(
+    "PuschelzMinimapMenuCombatLogGroupContextToggle",
+    "Only auto enable in raid or instance groups",
+    { relativeTo = buttons.autoCombatLog, point = "TOPLEFT", relativePoint = "BOTTOMLEFT", x = -17, y = -16 },
+    function(self)
+      auto_logging.ensure_settings().onlyEnableCombatLogInGroupContext = self:GetChecked() and true or false
+      if not self:GetChecked() then
+        auto_logging.ensure_settings().stopCombatLogOnLeave = false
+      end
+      auto_logging.schedule_evaluation()
+      update_minimap_menu_frame()
+    end,
+    {
+      { text = "Waits to start combat logging until you are in a raid, party instance, or instance group context.", wrap = true },
+      { text = "This avoids generating extra logs outside relevant content.", r = 0.8, g = 0.8, b = 0.8, wrap = true },
+    },
+    sub_toggle_options
+  )
+
+  buttons.stopCombatLogOnLeave = create_menu_toggle(
+    "PuschelzMinimapMenuCombatLogStopToggle",
+    "Auto stop after leaving raid or instance groups",
+    { relativeTo = buttons.combatLogOnlyInGroupContext, point = "TOPLEFT", relativePoint = "BOTTOMLEFT", x = 0, y = -8 },
+    function(self)
+      auto_logging.ensure_settings().stopCombatLogOnLeave = self:GetChecked() and true or false
+      auto_logging.schedule_evaluation()
+      update_minimap_menu_frame()
+    end,
+    {
+      { text = "Only stops combat logging if Puschelz started it automatically.", wrap = true },
+      { text = "Manual combat logging stays under user control.", r = 0.8, g = 0.8, b = 0.8, wrap = true },
+    },
+    sub_toggle_options
+  )
+
+  buttons.showCombatLogReminder = create_menu_toggle(
+    "PuschelzMinimapMenuCombatLogReminderToggle",
+    "Show Live Log reminder",
+    { relativeTo = buttons.stopCombatLogOnLeave, point = "TOPLEFT", relativePoint = "BOTTOMLEFT", x = 0, y = -8 },
+    function(self)
+      auto_logging.ensure_settings().showCombatLogReminder = self:GetChecked() and true or false
+      update_minimap_menu_frame()
+    end,
+    {
+      { text = "Shows an on-screen reminder when Puschelz auto-starts combat logging.", wrap = true },
+      { text = "Useful if you want to remember enabling Live Log in the Warcraft Logs desktop app.", r = 0.8, g = 0.8, b = 0.8, wrap = true },
+    },
+    sub_toggle_options
+  )
+
+  buttons.close = create_menu_button(
+    "PuschelzMinimapMenuCloseButton",
+    "Close",
+    { relativeTo = buttons.showCombatLogReminder, point = "TOP", relativePoint = "BOTTOM", x = 0, y = -18 },
+    function()
+    end
+  )
 
   minimap_ui.menuFrame = frame
   minimap_ui.menuButtons = buttons
@@ -5159,7 +5167,6 @@ frame:RegisterEvent("CALENDAR_OPEN_EVENT")
 frame:RegisterEvent("CALENDAR_UPDATE_INVITE_LIST")
 frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 frame:RegisterEvent("GROUP_ROSTER_UPDATE")
-frame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
 frame:RegisterEvent("PLAYER_DIFFICULTY_CHANGED")
 frame:RegisterEvent("CHAT_MSG_ADDON")
 frame:RegisterEvent("PLAYER_LOGOUT")
@@ -5247,7 +5254,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
     return
   end
 
-  if event == "ZONE_CHANGED_NEW_AREA" or event == "PLAYER_DIFFICULTY_CHANGED" then
+  if event == "PLAYER_DIFFICULTY_CHANGED" then
     auto_logging.schedule_evaluation()
     return
   end
