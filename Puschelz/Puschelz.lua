@@ -3,7 +3,7 @@ local ADDON_NAME = ...
 assert(PuschelzExportSnapshot, "Puschelz export snapshot module missing")
 assert(PuschelzBridgeSnapshot, "Puschelz bridge snapshot module missing")
 
-local SCHEMA_VERSION = 17
+local SCHEMA_VERSION = 18
 local GUILD_BANK_SLOTS_PER_TAB = 98
 local CALENDAR_MONTH_OFFSETS = { -1, 0, 1, 2 }
 local GUILD_ORDER_TYPE_GUILD = 1
@@ -374,6 +374,13 @@ local minimap_ui = {
   pendingDot = nil,
 }
 
+local auto_logging = {
+  evaluationScheduled = false,
+  combatLogAutoStarted = false,
+  reminderFrame = nil,
+  lastReminderAtMs = 0,
+}
+
 local guild_order_sync = {
   active = false,
   notifyOnCompletion = false,
@@ -450,6 +457,201 @@ end
 
 local function ensure_db()
   return PuschelzExportSnapshot.ensure_db(SCHEMA_VERSION, MINIMAP_BUTTON_DEFAULT_ANGLE)
+end
+
+do
+  local reminder_duration_sec = 3
+  local function print_logging_message(message)
+    if DEFAULT_CHAT_FRAME and type(DEFAULT_CHAT_FRAME.AddMessage) == "function" then
+      DEFAULT_CHAT_FRAME:AddMessage(message)
+      return
+    end
+
+    print(message)
+  end
+
+  local function ensure_logging_settings()
+    ensure_db()
+    return PuschelzDB.ui.logging
+  end
+
+  local function is_in_combat_log_group_context()
+    local in_instance = false
+    local instance_type = nil
+    if type(IsInInstance) == "function" then
+      in_instance, instance_type = IsInInstance()
+    end
+
+    local in_raid_group = type(IsInRaid) == "function" and IsInRaid() or false
+    local in_instance_group = false
+    if type(IsInGroup) == "function" then
+      if LE_PARTY_CATEGORY_INSTANCE then
+        in_instance_group = IsInGroup(LE_PARTY_CATEGORY_INSTANCE)
+      else
+        in_instance_group = IsInGroup()
+      end
+    end
+
+    local in_group_instance = in_instance and (instance_type == "party" or instance_type == "raid")
+    return in_raid_group or in_instance_group or in_group_instance
+  end
+
+  local function is_chat_logging_enabled()
+    return type(LoggingChat) == "function" and LoggingChat() and true or false
+  end
+
+  local function is_combat_logging_enabled()
+    return type(LoggingCombat) == "function" and LoggingCombat() and true or false
+  end
+
+  local function set_chat_logging_enabled(enabled, reason)
+    if type(LoggingChat) ~= "function" then
+      return false
+    end
+
+    if is_chat_logging_enabled() == enabled then
+      return false
+    end
+
+    LoggingChat(enabled and true or false)
+    print_logging_message(
+      string.format(
+        "Puschelz: chat logging %s%s.",
+        enabled and "enabled" or "disabled",
+        reason and reason ~= "" and (" (" .. reason .. ")") or ""
+      )
+    )
+    return true
+  end
+
+  local function set_combat_logging_enabled(enabled, reason)
+    if type(LoggingCombat) ~= "function" then
+      return false
+    end
+
+    if is_combat_logging_enabled() == enabled then
+      return false
+    end
+
+    LoggingCombat(enabled and true or false)
+    print_logging_message(
+      string.format(
+        "Puschelz: combat logging %s%s.",
+        enabled and "enabled" or "disabled",
+        reason and reason ~= "" and (" (" .. reason .. ")") or ""
+      )
+    )
+    return true
+  end
+
+  local function ensure_combat_log_reminder_frame()
+    if auto_logging.reminderFrame then
+      return auto_logging.reminderFrame
+    end
+
+    local frame = CreateFrame("Frame", "PuschelzCombatLogReminderFrame", UIParent)
+    frame:SetFrameStrata("DIALOG")
+    frame:SetClampedToScreen(true)
+    frame:SetSize(520, 44)
+    frame:SetPoint("TOP", UIParent, "TOP", 0, -180)
+    frame:Hide()
+
+    frame.text = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
+    frame.text:SetPoint("CENTER", frame, "CENTER", 0, 0)
+    frame.text:SetTextColor(1, 0.82, 0)
+    frame.text:SetJustifyH("CENTER")
+    frame.text:SetText("Enable Live Log in Warcraft Logs if you want live uploads.")
+
+    auto_logging.reminderFrame = frame
+    return frame
+  end
+
+  local function show_combat_log_reminder()
+    local now = now_runtime_ms()
+    if now - (auto_logging.lastReminderAtMs or 0) < 10000 then
+      return
+    end
+
+    auto_logging.lastReminderAtMs = now
+
+    if RaidNotice_AddMessage and RaidWarningFrame and ChatTypeInfo and ChatTypeInfo.RAID_WARNING then
+      RaidNotice_AddMessage(
+        RaidWarningFrame,
+        "Puschelz: Enable Live Log in Warcraft Logs if you want live uploads.",
+        ChatTypeInfo.RAID_WARNING
+      )
+    end
+
+    local frame = ensure_combat_log_reminder_frame()
+    frame.text:SetText("Enable Live Log in Warcraft Logs if you want live uploads.")
+    frame.expiresAt = GetTime() + reminder_duration_sec
+    frame:SetScript("OnUpdate", function(self)
+      if GetTime() >= (self.expiresAt or 0) then
+        self:SetScript("OnUpdate", nil)
+        self:Hide()
+      end
+    end)
+    frame:Show()
+  end
+
+  local function evaluate_auto_logging()
+    local settings = ensure_logging_settings()
+
+    if settings.autoEnableChatLog then
+      set_chat_logging_enabled(true, "auto")
+    end
+
+    if not settings.autoEnableCombatLog then
+      auto_logging.combatLogAutoStarted = false
+      return
+    end
+
+    local should_gate_on_group_context = settings.onlyEnableCombatLogInGroupContext
+    local in_group_context = is_in_combat_log_group_context()
+
+    if should_gate_on_group_context and not in_group_context then
+      if settings.stopCombatLogOnLeave and auto_logging.combatLogAutoStarted and is_combat_logging_enabled() then
+        if set_combat_logging_enabled(false, "left raid or instance context") then
+          auto_logging.combatLogAutoStarted = false
+        end
+      end
+      return
+    end
+
+    local changed = set_combat_logging_enabled(
+      true,
+      should_gate_on_group_context and "entered raid or instance context" or "auto"
+    )
+    if changed then
+      auto_logging.combatLogAutoStarted = true
+      if settings.showCombatLogReminder then
+        show_combat_log_reminder()
+      end
+    end
+  end
+
+  auto_logging.ensure_settings = ensure_logging_settings
+  auto_logging.is_in_group_context = is_in_combat_log_group_context
+  auto_logging.is_chat_logging_enabled = is_chat_logging_enabled
+  auto_logging.is_combat_logging_enabled = is_combat_logging_enabled
+  auto_logging.set_chat_logging_enabled = set_chat_logging_enabled
+  auto_logging.set_combat_logging_enabled = set_combat_logging_enabled
+  auto_logging.schedule_evaluation = function()
+    if auto_logging.evaluationScheduled then
+      return
+    end
+
+    if not C_Timer or type(C_Timer.After) ~= "function" then
+      evaluate_auto_logging()
+      return
+    end
+
+    auto_logging.evaluationScheduled = true
+    C_Timer.After(0.2, function()
+      auto_logging.evaluationScheduled = false
+      evaluate_auto_logging()
+    end)
+  end
 end
 
 function sync_queue.normalize_scope_list(raw_scopes)
@@ -4336,7 +4538,34 @@ local function update_minimap_menu_frame()
     buttons.simc:Disable()
   end
 
-  frame:SetHeight(168)
+  local settings = auto_logging.ensure_settings()
+  buttons.autoChatLog:SetChecked(settings.autoEnableChatLog)
+  buttons.autoCombatLog:SetChecked(settings.autoEnableCombatLog)
+  buttons.combatLogOnlyInGroupContext:SetChecked(settings.onlyEnableCombatLogInGroupContext)
+  buttons.stopCombatLogOnLeave:SetChecked(settings.stopCombatLogOnLeave)
+  buttons.showCombatLogReminder:SetChecked(settings.showCombatLogReminder)
+
+  local combat_enabled = settings.autoEnableCombatLog
+  local contextual_enabled = combat_enabled and settings.onlyEnableCombatLogInGroupContext
+
+  local function set_toggle_enabled(toggle, enabled)
+    local color = enabled and toggle.enabledColor or toggle.disabledColor
+    if enabled then
+      toggle:Enable()
+    else
+      toggle:Disable()
+    end
+
+    if toggle.label and color then
+      toggle.label:SetTextColor(color[1], color[2], color[3], color[4] or 1)
+    end
+  end
+
+  set_toggle_enabled(buttons.combatLogOnlyInGroupContext, combat_enabled)
+  set_toggle_enabled(buttons.stopCombatLogOnLeave, contextual_enabled)
+  set_toggle_enabled(buttons.showCombatLogReminder, combat_enabled)
+
+  frame:SetHeight(318)
 end
 
 local function ensure_minimap_menu_frame()
@@ -4346,7 +4575,7 @@ local function ensure_minimap_menu_frame()
   end
 
   local frame = CreateFrame("Frame", "PuschelzMinimapMenuFrame", UIParent, "BasicFrameTemplateWithInset")
-  frame:SetSize(260, 168)
+  frame:SetSize(320, 318)
   frame:SetFrameStrata("DIALOG")
   frame:SetClampedToScreen(true)
   frame:SetMovable(true)
@@ -4357,7 +4586,11 @@ local function ensure_minimap_menu_frame()
   frame:Hide()
 
   frame.title = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-  frame.title:SetPoint("TOP", frame, "TOP", 0, -10)
+  if frame.TitleBg then
+    frame.title:SetPoint("CENTER", frame.TitleBg, "CENTER", 0, 0)
+  else
+    frame.title:SetPoint("TOP", frame, "TOP", 0, -16)
+  end
   frame.title:SetText("Puschelz")
 
   local function create_menu_button(name, label, offset_y, on_click)
@@ -4370,6 +4603,50 @@ local function ensure_minimap_menu_frame()
       on_click()
     end)
     return button
+  end
+
+  local function create_menu_toggle(name, label, offset_y, on_click, tooltip_lines, options)
+    options = options or {}
+    local toggle = CreateFrame("CheckButton", name, frame, "UICheckButtonTemplate")
+    toggle:SetPoint("TOPLEFT", frame, "TOPLEFT", options.indentX or 18, offset_y)
+    toggle:SetScript("OnClick", on_click)
+    if options.scale then
+      toggle:SetScale(options.scale)
+    end
+
+    local label_font = _G[toggle:GetName() .. "Text"]
+    if label_font then
+      label_font:SetText(label)
+      label_font:SetWidth(options.labelWidth or 250)
+      label_font:SetJustifyH("LEFT")
+      if options.fontObject then
+        label_font:SetFontObject(options.fontObject)
+      end
+      label_font:SetTextColor(1, 0.82, 0)
+    end
+    toggle.label = label_font
+    toggle.enabledColor = options.enabledColor or { 1, 0.82, 0, 1 }
+    toggle.disabledColor = options.disabledColor or { 0.5, 0.5, 0.5, 1 }
+
+    toggle:SetScript("OnEnter", function(self)
+      if not tooltip_lines or not GameTooltip then
+        return
+      end
+
+      GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+      GameTooltip:ClearLines()
+      for _, line in ipairs(tooltip_lines) do
+        GameTooltip:AddLine(line.text, line.r or 1, line.g or 1, line.b or 1, line.wrap and true or false)
+      end
+      GameTooltip:Show()
+    end)
+    toggle:SetScript("OnLeave", function()
+      if GameTooltip then
+        GameTooltip:Hide()
+      end
+    end)
+
+    return toggle
   end
 
   local buttons = {
@@ -4396,7 +4673,121 @@ local function ensure_minimap_menu_frame()
       function()
       end
     ),
+    autoChatLog = create_menu_toggle(
+      "PuschelzMinimapMenuAutoChatLogToggle",
+      "Auto enable chat log",
+      -110,
+      function(self)
+        auto_logging.ensure_settings().autoEnableChatLog = self:GetChecked() and true or false
+        auto_logging.set_chat_logging_enabled(self:GetChecked() and true or false, "manual toggle")
+        auto_logging.schedule_evaluation()
+        update_minimap_menu_frame()
+      end,
+      {
+        { text = "Keeps WoW chat logging enabled so the desktop client can read addon chat messages from WoWChatLog.txt.", wrap = true },
+        { text = "Recommended if you want reliable addon-to-desktop chatlog communication.", r = 0.8, g = 0.8, b = 0.8, wrap = true },
+      }
+    ),
+    autoCombatLog = create_menu_toggle(
+      "PuschelzMinimapMenuAutoCombatLogToggle",
+      "Auto enable combat log",
+      -138,
+      function(self)
+        local enabled = self:GetChecked() and true or false
+        local settings = auto_logging.ensure_settings()
+        settings.autoEnableCombatLog = enabled
+
+        if enabled then
+          if settings.onlyEnableCombatLogInGroupContext and not auto_logging.is_in_group_context() then
+            auto_logging.combatLogAutoStarted = false
+            if DEFAULT_CHAT_FRAME and type(DEFAULT_CHAT_FRAME.AddMessage) == "function" then
+              DEFAULT_CHAT_FRAME:AddMessage("Puschelz: combat logging armed and waiting for raid or instance group context.")
+            else
+              print("Puschelz: combat logging armed and waiting for raid or instance group context.")
+            end
+          else
+            auto_logging.set_combat_logging_enabled(true, "manual toggle")
+            auto_logging.combatLogAutoStarted = true
+          end
+        else
+          auto_logging.set_combat_logging_enabled(false, "manual toggle")
+          auto_logging.combatLogAutoStarted = false
+        end
+
+        auto_logging.schedule_evaluation()
+        update_minimap_menu_frame()
+      end,
+      {
+        { text = "Automatically turns on WoWCombatLog.txt for you.", wrap = true },
+        { text = "Useful quality-of-life if you want live Warcraft Logs, but not required for desktop client chatlog communication.", r = 0.8, g = 0.8, b = 0.8, wrap = true },
+      }
+    ),
+    combatLogOnlyInGroupContext = create_menu_toggle(
+      "PuschelzMinimapMenuCombatLogGroupContextToggle",
+      "Only auto enable in raid or instance groups",
+      -176,
+      function(self)
+        auto_logging.ensure_settings().onlyEnableCombatLogInGroupContext = self:GetChecked() and true or false
+        if not self:GetChecked() then
+          auto_logging.ensure_settings().stopCombatLogOnLeave = false
+        end
+        auto_logging.schedule_evaluation()
+        update_minimap_menu_frame()
+      end,
+      {
+        { text = "Waits to start combat logging until you are in a raid, party instance, or instance group context.", wrap = true },
+        { text = "This avoids generating extra logs outside relevant content.", r = 0.8, g = 0.8, b = 0.8, wrap = true },
+      },
+      {
+        indentX = 34,
+        labelWidth = 225,
+        scale = 0.92,
+        fontObject = GameFontHighlightSmall,
+      }
+    ),
+    stopCombatLogOnLeave = create_menu_toggle(
+      "PuschelzMinimapMenuCombatLogStopToggle",
+      "Auto stop after leaving raid or instance groups",
+      -200,
+      function(self)
+        auto_logging.ensure_settings().stopCombatLogOnLeave = self:GetChecked() and true or false
+        auto_logging.schedule_evaluation()
+        update_minimap_menu_frame()
+      end,
+      {
+        { text = "Only stops combat logging if Puschelz started it automatically.", wrap = true },
+        { text = "Manual combat logging stays under user control.", r = 0.8, g = 0.8, b = 0.8, wrap = true },
+      },
+      {
+        indentX = 34,
+        labelWidth = 225,
+        scale = 0.92,
+        fontObject = GameFontHighlightSmall,
+      }
+    ),
+    showCombatLogReminder = create_menu_toggle(
+      "PuschelzMinimapMenuCombatLogReminderToggle",
+      "Show Live Log reminder",
+      -224,
+      function(self)
+        auto_logging.ensure_settings().showCombatLogReminder = self:GetChecked() and true or false
+        update_minimap_menu_frame()
+      end,
+      {
+        { text = "Shows an on-screen reminder when Puschelz auto-starts combat logging.", wrap = true },
+        { text = "Useful if you want to remember enabling Live Log in the Warcraft Logs desktop app.", r = 0.8, g = 0.8, b = 0.8, wrap = true },
+      },
+      {
+        indentX = 34,
+        labelWidth = 225,
+        scale = 0.92,
+        fontObject = GameFontHighlightSmall,
+      }
+    ),
   }
+
+  buttons.close:ClearAllPoints()
+  buttons.close:SetPoint("TOP", frame, "TOP", 0, -270)
 
   minimap_ui.menuFrame = frame
   minimap_ui.menuButtons = buttons
@@ -4476,6 +4867,21 @@ local function add_sync_tooltip_lines(tooltip)
     tooltip:AddLine("Guild: queue empty", 0.55, 0.85, 0.55, true)
   end
 
+  tooltip:AddLine(" ")
+  tooltip:AddLine(
+    string.format("Chat log: %s", auto_logging.is_chat_logging_enabled() and "on" or "off"),
+    0.82,
+    0.82,
+    0.82,
+    true
+  )
+  tooltip:AddLine(
+    string.format("Combat log: %s", auto_logging.is_combat_logging_enabled() and "on" or "off"),
+    0.82,
+    0.82,
+    0.82,
+    true
+  )
   tooltip:AddLine(" ")
   tooltip:AddLine("Click to open the sync menu.", 0.8, 0.8, 0.8)
 end
@@ -4735,6 +5141,8 @@ frame:RegisterEvent("CALENDAR_OPEN_EVENT")
 frame:RegisterEvent("CALENDAR_UPDATE_INVITE_LIST")
 frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 frame:RegisterEvent("GROUP_ROSTER_UPDATE")
+frame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+frame:RegisterEvent("PLAYER_DIFFICULTY_CHANGED")
 frame:RegisterEvent("CHAT_MSG_ADDON")
 frame:RegisterEvent("PLAYER_LOGOUT")
 
@@ -4762,6 +5170,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
     broadcast_open_bridge_requests()
     schedule_group_roster_update()
     refresh_sync_state_visuals()
+    auto_logging.schedule_evaluation()
     return
   end
 
@@ -4810,11 +5219,18 @@ frame:SetScript("OnEvent", function(_, event, ...)
   if event == "PLAYER_ENTERING_WORLD" then
     refresh_minimap_button_position()
     schedule_group_roster_update()
+    auto_logging.schedule_evaluation()
     return
   end
 
   if event == "GROUP_ROSTER_UPDATE" then
     schedule_group_roster_update()
+    auto_logging.schedule_evaluation()
+    return
+  end
+
+  if event == "ZONE_CHANGED_NEW_AREA" or event == "PLAYER_DIFFICULTY_CHANGED" then
+    auto_logging.schedule_evaluation()
     return
   end
 

@@ -45,6 +45,23 @@ function PuschelzExportSnapshot.ensure_db(schema_version, minimap_default_angle)
     minimap_button.angle = tonumber(minimap_button.minimapPos) or minimap_default_angle
   end
 
+  local logging = ensure_table(ui, "logging")
+  if type(logging.autoEnableChatLog) ~= "boolean" then
+    logging.autoEnableChatLog = false
+  end
+  if type(logging.autoEnableCombatLog) ~= "boolean" then
+    logging.autoEnableCombatLog = false
+  end
+  if type(logging.onlyEnableCombatLogInGroupContext) ~= "boolean" then
+    logging.onlyEnableCombatLogInGroupContext = false
+  end
+  if type(logging.stopCombatLogOnLeave) ~= "boolean" then
+    logging.stopCombatLogOnLeave = false
+  end
+  if type(logging.showCombatLogReminder) ~= "boolean" then
+    logging.showCombatLogReminder = false
+  end
+
   return db
 end
 
