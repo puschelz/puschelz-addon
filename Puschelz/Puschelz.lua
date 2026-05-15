@@ -907,6 +907,8 @@ function sync_queue.build_simc_signature()
   end
 
   local parts = {}
+  sync_queue.append_hashed_field(parts, request.requestId)
+  sync_queue.append_hashed_field(parts, request.requestedAt)
   sync_queue.append_hashed_field(parts, request.characterName)
   sync_queue.append_hashed_field(parts, request.realmName)
   sync_queue.append_hashed_field(parts, request.runDroptimizerNow == true and "1" or "0")
@@ -2980,12 +2982,27 @@ local function queue_simc_profile_request(run_droptimizer_now)
     runDroptimizerNow = run_droptimizer_now == true,
   }
   PuschelzDB.updatedAt = requested_at
-  sync_queue.mark_local_pending_reload({ "simc" }, true)
+  local pending = sync_queue.mark_local_pending_reload({ "simc" }, true)
+
+  if not pending then
+    red_chat_message("Puschelz: SimC export captured, but pending reload was not created. Try /reload if the desktop client does not pick it up.")
+    return false
+  end
 
   if run_droptimizer_now then
-    print("Puschelz: queued SimC export for sync. Run /reload or log out so the desktop client can upload it and start a Mythic Droptimizer run.")
+    print(
+      string.format(
+        "Puschelz: queued SimC export and marked pending reload v%d (simc). Run /reload or log out so the desktop client can upload it and start a Mythic Droptimizer run.",
+        tonumber(pending.payloadVersion) or 0
+      )
+    )
   else
-    print("Puschelz: queued SimC export for sync. Run /reload or log out so the desktop client can upload it.")
+    print(
+      string.format(
+        "Puschelz: queued SimC export and marked pending reload v%d (simc). Run /reload or log out so the desktop client can upload it.",
+        tonumber(pending.payloadVersion) or 0
+      )
+    )
   end
 
   return true
