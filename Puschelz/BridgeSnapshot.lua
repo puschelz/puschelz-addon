@@ -136,6 +136,11 @@ function PuschelzBridgeSnapshot.get_open_requests(root)
   return root.openRequests
 end
 
+function PuschelzBridgeSnapshot.get_sync_acknowledgments(root)
+  root = root or PuschelzBridgeSnapshot.ensure_loaded()
+  return root.syncAcknowledgments
+end
+
 function PuschelzBridgeSnapshot.get_recipe_entry(key, root)
   if type(key) ~= "string" or key == "" then
     return nil
